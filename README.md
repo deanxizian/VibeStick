@@ -161,8 +161,9 @@ Empty values in `.env` generally mean "use the built-in default". `scripts/dev.s
 
 ### Core settings
 
-- `VIBE_STICK_PROJECT_ROOT`: project root used for local Codex session observation.
+- `VIBE_STICK_PROJECT_ROOT`: local project used by Bridge actions and as the fallback display name.
 - `VIBE_STICK_PROJECT_NAME`: optional display-name override.
+- Codex observation covers every user-started root conversation on this Mac. Background subagents are excluded.
 - `VIBE_STICK_PROVIDER`: active provider selection, `auto`, `codex`, or `claude`; default `auto`.
 - `VIBE_STICK_BRIDGE_TOKEN`: shared token required whenever the bridge binds outside loopback, such as `0.0.0.0`.
 - `VIBE_STICK_MAX_RECORDING_AUDIO_BYTES`: max `/recording/audio` body size, default `2000000`.

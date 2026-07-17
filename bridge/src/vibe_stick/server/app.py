@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import hmac
 import ipaddress
 import json
@@ -33,7 +34,7 @@ from vibe_stick.protocol.state import (
     now_time_text,
     state_from_dict,
 )
-from vibe_stick.providers.base import ProviderObservation
+from vibe_stick.providers.base import ProviderAlert, ProviderObservation
 from vibe_stick.providers.claude import observe_claude
 from vibe_stick.providers.codex import observe_codex
 
@@ -42,6 +43,7 @@ BRIDGE_NAME = "vibestick-bridge"
 DEFAULT_MAX_RECORDING_AUDIO_BYTES = 2_000_000
 DEFAULT_CLAUDE_USAGE_INTERVAL_SECONDS = 300
 MIN_CLAUDE_USAGE_INTERVAL_SECONDS = 30
+ALERT_PRESENTATION_SECONDS = 2.5
 PLACEHOLDER_BRIDGE_TOKENS = {
     "change-this-shared-token",
     "paste-generated-token-here",
@@ -63,6 +65,10 @@ class BridgeStateStore:
             self._claude_quota = _claude_quota_from_state(self._state)
         self._claude_usage_last_attempt = 0.0
         self._claude_usage_last_success = 0.0
+        self._alert_tracking_initialized = False
+        self._seen_alert_event_ids: set[str] = set()
+        self._pending_alerts: deque[ProviderAlert] = deque()
+        self._published_alert_since = 0.0
         quota = load_quota(QUOTA_PATH)
         self._state.codex.quota_5h_remaining = quota.quota_5h_remaining
         self._state.codex.quota_7d_remaining = quota.quota_7d_remaining
@@ -179,9 +185,55 @@ class BridgeStateStore:
 
         self._state.codex = _codex_state_from_observation(codex_observation)
         self._state.provider = _provider_state_from_observation(active_observation)
-        self._apply_alert_from_observation(
-            _select_alert_observation(active_observation, codex_observation, claude_observation)
+        self._apply_alerts_from_observations(
+            active_observation,
+            codex_observation,
+            claude_observation,
         )
+
+    def _apply_alerts_from_observations(
+        self,
+        active_observation: ProviderObservation,
+        *observations: ProviderObservation,
+    ) -> None:
+        preferred = _select_alert_observation(active_observation, *observations)
+        alert_events = _collect_alert_events(preferred, *observations)
+        now = time.monotonic()
+
+        if not self._alert_tracking_initialized:
+            self._seen_alert_event_ids.update(alert.event_id for alert in alert_events)
+            self._alert_tracking_initialized = True
+            self._apply_alert_from_observation(preferred)
+            self._published_alert_since = now
+            return
+
+        for alert in alert_events:
+            if alert.event_id in self._seen_alert_event_ids:
+                continue
+            self._seen_alert_event_ids.add(alert.event_id)
+            self._pending_alerts.append(alert)
+
+        current_is_alert = self._state.alert.type in {
+            AlertType.DONE,
+            AlertType.APPROVAL,
+            AlertType.ERROR,
+        }
+        presentation_complete = (
+            not current_is_alert
+            or now - self._published_alert_since >= ALERT_PRESENTATION_SECONDS
+        )
+        if self._pending_alerts and presentation_complete:
+            alert = self._pending_alerts.popleft()
+            self._state.alert = AlertState(
+                event_id=alert.event_id,
+                type=AlertType(alert.alert_type),
+                message=alert.message,
+            )
+            self._published_alert_since = now
+            return
+
+        if not self._pending_alerts:
+            self._apply_alert_from_observation(preferred)
 
     def _apply_alert_from_observation(self, observation: ProviderObservation) -> None:
         try:
@@ -560,6 +612,37 @@ def _select_alert_observation(
         if _observation_has_alert(observation):
             return observation
     return active_observation
+
+
+def _collect_alert_events(
+    preferred: ProviderObservation,
+    *observations: ProviderObservation,
+) -> tuple[ProviderAlert, ...]:
+    events: list[ProviderAlert] = []
+    seen_event_ids: set[str] = set()
+    for observation in (preferred, *observations):
+        candidates = observation.alert_events
+        if not candidates and _observation_has_alert(observation):
+            candidates = (
+                ProviderAlert(
+                    event_id=observation.alert_event_id,
+                    alert_type=observation.alert_type,
+                    message=observation.alert_message,
+                    timestamp=observation.latest_event_timestamp,
+                ),
+            )
+        for alert in candidates:
+            if not alert.event_id or alert.event_id in seen_event_ids:
+                continue
+            try:
+                alert_type = AlertType(alert.alert_type)
+            except ValueError:
+                continue
+            if alert_type not in {AlertType.DONE, AlertType.APPROVAL, AlertType.ERROR}:
+                continue
+            seen_event_ids.add(alert.event_id)
+            events.append(alert)
+    return tuple(events)
 
 
 def _observation_has_alert(observation: ProviderObservation) -> bool:

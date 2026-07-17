@@ -7,6 +7,14 @@ from typing import Protocol
 from vibe_stick.protocol.state import AgentStatus
 
 
+@dataclass(frozen=True)
+class ProviderAlert:
+    event_id: str
+    alert_type: str
+    message: str
+    timestamp: datetime | None = None
+
+
 @dataclass
 class ProviderObservation:
     provider_id: str
@@ -22,6 +30,7 @@ class ProviderObservation:
     alert_message: str
     alert_event_id: str
     latest_event_timestamp: datetime | None = None
+    alert_events: tuple[ProviderAlert, ...] = ()
 
 
 class Provider(Protocol):

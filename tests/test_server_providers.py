@@ -1,11 +1,12 @@
 import os
 import unittest
+from collections import deque
 from datetime import datetime, timezone
 from unittest import mock
 
 from vibe_stick.protocol.state import AgentStatus, ProviderState, default_state
 from vibe_stick.codex.quota import QuotaSnapshot
-from vibe_stick.providers.base import ProviderObservation
+from vibe_stick.providers.base import ProviderAlert, ProviderObservation
 from vibe_stick.server import app
 
 
@@ -82,6 +83,30 @@ class ServerProviderTests(unittest.TestCase):
         selected = app._select_alert_observation(active, codex, active)
 
         self.assertIs(selected, active)
+
+    def test_multiple_codex_completion_alerts_are_presented_in_order(self) -> None:
+        store = app.BridgeStateStore.__new__(app.BridgeStateStore)
+        store._state = default_state()
+        store._alert_tracking_initialized = True
+        store._seen_alert_event_ids = set()
+        store._pending_alerts = deque()
+        store._published_alert_since = 0.0
+        first = ProviderAlert("evt_first", "DONE", "First completed")
+        second = ProviderAlert("evt_second", "DONE", "Second completed")
+        codex = self._obs("codex", status=AgentStatus.RUNNING)
+        codex.alert_events = (first, second)
+
+        with mock.patch.object(app.time, "monotonic", return_value=10.0):
+            store._apply_alerts_from_observations(codex, codex)
+        self.assertEqual(store._state.alert.event_id, "evt_first")
+
+        with mock.patch.object(app.time, "monotonic", return_value=11.0):
+            store._apply_alerts_from_observations(codex, codex)
+        self.assertEqual(store._state.alert.event_id, "evt_first")
+
+        with mock.patch.object(app.time, "monotonic", return_value=13.0):
+            store._apply_alerts_from_observations(codex, codex)
+        self.assertEqual(store._state.alert.event_id, "evt_second")
 
     def test_claude_usage_interval_has_minimum(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):

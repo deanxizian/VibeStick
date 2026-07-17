@@ -126,6 +126,12 @@ else
   printf '%s\n' "Kept existing firmware/sticks3/include/vibe_stick_secrets.h."
 fi
 
+project_root="$(env_value VIBE_STICK_PROJECT_ROOT "$ENV_PATH")"
+if [ -z "$project_root" ]; then
+  set_env_value VIBE_STICK_PROJECT_ROOT "$ROOT_DIR" "$ENV_PATH"
+  printf '%s\n' "Set VIBE_STICK_PROJECT_ROOT to $ROOT_DIR."
+fi
+
 env_token="$(env_value VIBE_STICK_BRIDGE_TOKEN "$ENV_PATH")"
 secret_token="$(secret_value VIBE_STICK_BRIDGE_TOKEN "$SECRETS_PATH")"
 

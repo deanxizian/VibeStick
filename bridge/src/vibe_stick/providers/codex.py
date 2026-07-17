@@ -6,7 +6,7 @@ from pathlib import Path
 from vibe_stick.codex.local_observer import LocalCodexObservation
 from vibe_stick.codex.local_observer import observe_codex as observe_local_codex
 from vibe_stick.protocol.state import AgentStatus
-from vibe_stick.providers.base import ProviderObservation
+from vibe_stick.providers.base import ProviderAlert, ProviderObservation
 
 
 def observe_codex(project_root: Path) -> ProviderObservation:
@@ -18,13 +18,15 @@ def observation_from_local_codex(observation: LocalCodexObservation) -> Provider
     alert_type = observation.alert_type or "NONE"
     alert_message = observation.alert_message
     alert_event_id = ""
-    if observation.alert_timestamp is not None and observation.status in {
-        AgentStatus.DONE,
-        AgentStatus.APPROVAL,
-        AgentStatus.ERROR,
+    if observation.alert_timestamp is not None and alert_type in {
+        AgentStatus.DONE.value,
+        AgentStatus.APPROVAL.value,
+        AgentStatus.ERROR.value,
     }:
         alert_type = alert_type if alert_type != "NONE" else observation.status.value
-        alert_event_id = _stable_event_id(alert_type.lower(), observation.alert_timestamp)
+        alert_event_id = observation.alert_event_id or _stable_event_id(
+            alert_type.lower(), observation.alert_timestamp
+        )
 
     return ProviderObservation(
         provider_id="codex",
@@ -40,6 +42,15 @@ def observation_from_local_codex(observation: LocalCodexObservation) -> Provider
         alert_message=alert_message,
         alert_event_id=alert_event_id,
         latest_event_timestamp=observation.latest_event_timestamp,
+        alert_events=tuple(
+            ProviderAlert(
+                event_id=alert.event_id,
+                alert_type=alert.alert_type,
+                message=alert.message,
+                timestamp=alert.timestamp,
+            )
+            for alert in observation.alert_events
+        ),
     )
 
 
