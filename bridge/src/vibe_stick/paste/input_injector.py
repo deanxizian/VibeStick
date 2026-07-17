@@ -73,7 +73,7 @@ class MacPasteInjector:
         for line in script:
             args.extend(["-e", line])
         try:
-            result = subprocess.run(args, check=False, capture_output=True, text=True, timeout=5)
+            result = subprocess.run(args, check=False, capture_output=True, text=True, timeout=4)
         except (OSError, subprocess.TimeoutExpired) as exc:
             return PasteResult(False, f"macOS keyboard control failed: {exc}")
         if result.returncode != 0:
@@ -88,7 +88,7 @@ class MacPasteInjector:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=2,
+                timeout=1,
             )
         except (OSError, subprocess.TimeoutExpired):
             return None
@@ -104,7 +104,7 @@ class MacPasteInjector:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=2,
+                timeout=1,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return PasteResult(False, f"Clipboard write failed: {exc}")

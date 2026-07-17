@@ -10,16 +10,22 @@ import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from vibe_stick import __version__ as BRIDGE_VERSION
-from vibe_stick.audio.recorder import RecordingController
+from vibe_stick.audio.recorder import (
+    RecordingConflictError,
+    RecordingController,
+    RecordingRequestError,
+)
 from vibe_stick.claude.usage import fetch_usage as fetch_claude_usage
 from vibe_stick.claude.usage import to_quota_snapshot as claude_usage_to_quota
 from vibe_stick.codex.quota import QuotaSnapshot, load_quota, save_quota
 from vibe_stick.config.paths import CLAUDE_QUOTA_PATH, QUOTA_PATH, RECORDING_PATH, STATE_PATH, ensure_app_support
+from vibe_stick.config.storage import atomic_write_text
 from vibe_stick.desktop.hud import hide_hud
 from vibe_stick.paste.input_injector import MacPasteInjector, PasteResult
 from vibe_stick.protocol.state import (
@@ -43,13 +49,52 @@ BRIDGE_NAME = "vibestick-bridge"
 DEFAULT_MAX_RECORDING_AUDIO_BYTES = 2_000_000
 DEFAULT_CLAUDE_USAGE_INTERVAL_SECONDS = 300
 MIN_CLAUDE_USAGE_INTERVAL_SECONDS = 30
-ALERT_PRESENTATION_SECONDS = 2.5
+ALERT_PRESENTATION_SECONDS = 6.0
+MAX_JSON_BODY_BYTES = 64 * 1024
+REQUEST_SOCKET_TIMEOUT_SECONDS = 10
+MAX_CONCURRENT_REQUESTS = 16
+MAX_SEEN_ALERT_EVENT_IDS = 2048
+MIN_BRIDGE_TOKEN_LENGTH = 32
 PLACEHOLDER_BRIDGE_TOKENS = {
     "change-this-shared-token",
     "paste-generated-token-here",
     "changeme",
     "change-me",
+    "your-token",
 }
+
+
+class RequestBodyError(ValueError):
+    def __init__(self, status: HTTPStatus, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+class VibeStickHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    block_on_close = False
+    request_queue_size = 16
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self._request_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request: object, client_address: object) -> None:
+        if not self._request_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request: object, client_address: object) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
 
 class BridgeStateStore:
@@ -65,8 +110,11 @@ class BridgeStateStore:
             self._claude_quota = _claude_quota_from_state(self._state)
         self._claude_usage_last_attempt = 0.0
         self._claude_usage_last_success = 0.0
+        self._claude_usage_generation = 0
+        self._claude_usage_thread: threading.Thread | None = None
         self._alert_tracking_initialized = False
         self._seen_alert_event_ids: set[str] = set()
+        self._seen_alert_event_order: deque[str] = deque()
         self._pending_alerts: deque[ProviderAlert] = deque()
         self._published_alert_since = 0.0
         quota = load_quota(QUOTA_PATH)
@@ -83,7 +131,7 @@ class BridgeStateStore:
             self._refresh_providers_locked()
             self._state.time = now_time_text()
             self._save_state_locked()
-            return self._state
+            return self._state_snapshot_locked()
 
     def update_from_event(self, event: dict[str, Any]) -> VibeStickState:
         with self._lock:
@@ -98,7 +146,7 @@ class BridgeStateStore:
             elif event_name == "button_double":
                 self._log_button_action("pause", self.input_injector.pause_current_codex_task())
             self._save_state_locked()
-            return self._state
+            return self._state_snapshot_locked()
 
     @staticmethod
     def _log_button_action(action: str, result: PasteResult) -> None:
@@ -111,7 +159,7 @@ class BridgeStateStore:
         with self._lock:
             self.refresh_quota_locked()
             self._save_state_locked()
-            return self._state
+            return self._state_snapshot_locked()
 
     def refresh_quota_locked(self) -> None:
         if self._state.active_provider == "claude":
@@ -129,18 +177,11 @@ class BridgeStateStore:
 
     def start_recording(self, request: dict[str, Any] | None = None) -> dict[str, Any]:
         session = self.recording.start(request)
-        with self._lock:
-            self._state.alert = AlertState(
-                event_id="",
-                type=AlertType.NONE,
-                message="",
-            )
-            self._save_state_locked()
-        return {"recording": session.to_jsonable(), "state": self.get_state().to_jsonable()}
+        return {"recording": session.to_public_jsonable(), "state": self.get_state().to_jsonable()}
 
     def stop_recording(self, request: dict[str, Any] | None = None) -> dict[str, Any]:
         session = self.recording.stop(request)
-        return {"recording": session.to_jsonable(), "state": self.get_state().to_jsonable()}
+        return {"recording": session.to_public_jsonable(), "state": self.get_state().to_jsonable()}
 
     def upload_recording_audio(
         self,
@@ -158,7 +199,7 @@ class BridgeStateStore:
             channels=channels,
             bits_per_sample=bits_per_sample,
         )
-        return {"recording": session.to_jsonable(), "state": self.get_state().to_jsonable()}
+        return {"recording": session.to_public_jsonable(), "state": self.get_state().to_jsonable()}
 
     def _refresh_providers_locked(self) -> None:
         codex_observation = observe_codex(self._project_root)
@@ -201,16 +242,19 @@ class BridgeStateStore:
         now = time.monotonic()
 
         if not self._alert_tracking_initialized:
-            self._seen_alert_event_ids.update(alert.event_id for alert in alert_events)
+            for alert in alert_events:
+                self._remember_alert_event_id(alert.event_id)
             self._alert_tracking_initialized = True
-            self._apply_alert_from_observation(preferred)
+            # Establish a baseline after a Bridge restart without replaying a
+            # terminal event that the device may already have announced.
+            self._state.alert = AlertState(event_id="", type=AlertType.NONE, message="")
             self._published_alert_since = now
             return
 
         for alert in alert_events:
             if alert.event_id in self._seen_alert_event_ids:
                 continue
-            self._seen_alert_event_ids.add(alert.event_id)
+            self._remember_alert_event_id(alert.event_id)
             self._pending_alerts.append(alert)
 
         current_is_alert = self._state.alert.type in {
@@ -233,21 +277,25 @@ class BridgeStateStore:
             return
 
         if not self._pending_alerts:
-            self._apply_alert_from_observation(preferred)
-
-    def _apply_alert_from_observation(self, observation: ProviderObservation) -> None:
-        try:
-            alert_type = AlertType(observation.alert_type)
-        except ValueError:
-            alert_type = AlertType.NONE
-        if alert_type in {AlertType.DONE, AlertType.APPROVAL, AlertType.ERROR} and observation.alert_event_id:
-            self._state.alert = AlertState(
-                event_id=observation.alert_event_id,
-                type=alert_type,
-                message=observation.alert_message,
-            )
-        else:
+            visible_event_ids = {alert.event_id for alert in alert_events}
+            if self._state.alert.event_id in visible_event_ids:
+                return
+            # Never switch back to an older, already-consumed event merely
+            # because its provider is active. That A→B→A transition makes the
+            # device ring twice for A because it only remembers the last id.
             self._state.alert = AlertState(event_id="", type=AlertType.NONE, message="")
+
+    def _remember_alert_event_id(self, event_id_value: str) -> None:
+        if not event_id_value or event_id_value in self._seen_alert_event_ids:
+            return
+        self._seen_alert_event_ids.add(event_id_value)
+        order = getattr(self, "_seen_alert_event_order", None)
+        if order is None:
+            order = deque()
+            self._seen_alert_event_order = order
+        order.append(event_id_value)
+        while len(order) > MAX_SEEN_ALERT_EVENT_IDS:
+            self._seen_alert_event_ids.discard(order.popleft())
 
     def _apply_codex_quota(self, observation: ProviderObservation, *, force_stale: bool = False) -> None:
         if observation.quota_5h_remaining is not None or observation.quota_7d_remaining is not None:
@@ -282,9 +330,48 @@ class BridgeStateStore:
         interval = _claude_usage_interval_seconds()
         if not force and now - self._claude_usage_last_attempt < interval:
             return
-        self._claude_usage_last_attempt = now
+        if not force:
+            running = self._claude_usage_thread
+            if running is not None and running.is_alive():
+                return
+            self._claude_usage_last_attempt = now
+            generation = self._next_claude_usage_generation_locked()
+            self._claude_usage_thread = threading.Thread(
+                target=self._refresh_claude_usage_background,
+                args=(generation,),
+                name="vibestick-claude-quota",
+                daemon=True,
+            )
+            self._claude_usage_thread.start()
+            return
 
+        self._claude_usage_last_attempt = now
+        generation = self._next_claude_usage_generation_locked()
         usage = fetch_claude_usage()
+        if generation == self._claude_usage_generation:
+            self._apply_claude_usage_result_locked(usage, now)
+
+    def _next_claude_usage_generation_locked(self) -> int:
+        self._claude_usage_generation = getattr(
+            self,
+            "_claude_usage_generation",
+            0,
+        ) + 1
+        return self._claude_usage_generation
+
+    def _refresh_claude_usage_background(self, generation: int) -> None:
+        try:
+            usage = fetch_claude_usage()
+        except Exception as exc:  # Provider failures must never take down state serving.
+            print(f"claude quota refresh failed: {type(exc).__name__}", flush=True)
+            usage = None
+        now = time.monotonic()
+        with self._lock:
+            if generation != self._claude_usage_generation:
+                return
+            self._apply_claude_usage_result_locked(usage, now)
+
+    def _apply_claude_usage_result_locked(self, usage: object | None, now: float) -> None:
         if usage is None:
             if _has_quota(self._claude_quota):
                 self._claude_quota = _stale_quota(self._claude_quota)
@@ -343,70 +430,109 @@ class BridgeStateStore:
             return default_state()
 
     def _save_state_locked(self) -> None:
-        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(self._state.to_jsonable(), indent=2) + "\n")
+        atomic_write_text(
+            STATE_PATH,
+            json.dumps(self._state.to_jsonable(), indent=2) + "\n",
+            skip_if_unchanged=True,
+        )
+
+    def _state_snapshot_locked(self) -> VibeStickState:
+        return state_from_dict(self._state.to_jsonable())
 
 
 def make_handler(store: BridgeStateStore) -> type[BaseHTTPRequestHandler]:
     class VibeStickHandler(BaseHTTPRequestHandler):
         server_version = "VibeStick/0.1"
 
+        def setup(self) -> None:
+            super().setup()
+            self.connection.settimeout(REQUEST_SOCKET_TIMEOUT_SECONDS)
+
         def do_GET(self) -> None:
-            if self.path == "/state":
-                self._send_json(_with_bridge_metadata(store.get_state().to_jsonable()))
-            elif self.path == "/health":
-                self._send_json(
-                    {
-                        "ok": True,
-                        "bridge_name": BRIDGE_NAME,
-                        "bridge_version": BRIDGE_VERSION,
-                    }
-                )
-            else:
-                self._send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
+            parsed = urlparse(self.path)
+            if parsed.path in _protected_paths() and not self._is_authorized():
+                self._send_error(HTTPStatus.UNAUTHORIZED, "Unauthorized")
+                return
+            try:
+                if parsed.path == "/state":
+                    self._send_json(_with_bridge_metadata(store.get_state().to_jsonable()))
+                elif parsed.path == "/health":
+                    self._send_json(
+                        {
+                            "ok": True,
+                            "bridge_name": BRIDGE_NAME,
+                            "bridge_version": BRIDGE_VERSION,
+                            "bridge_instance": os.environ.get(
+                                "VIBE_STICK_INSTALL_NONCE",
+                                "",
+                            ),
+                        }
+                    )
+                else:
+                    self._send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
+            except Exception as exc:
+                self._send_internal_error(exc)
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path in _protected_paths() and not self._is_authorized():
                 self._send_error(HTTPStatus.UNAUTHORIZED, "Unauthorized")
                 return
-
-            if parsed.path == "/event":
-                body = self._read_json_body()
-                self._send_json(store.update_from_event(body).to_jsonable())
-            elif parsed.path == "/quota/refresh":
-                state = store.refresh_quota()
-                self._send_json({"refreshed": True, "state": state.to_jsonable()})
-            elif parsed.path == "/recording/start":
-                body = self._read_json_body()
-                self._send_json(store.start_recording(body))
-            elif parsed.path == "/recording/audio":
-                query = parse_qs(parsed.query)
-                content_length = self._content_length()
-                max_audio_bytes = _max_recording_audio_bytes()
-                if content_length > max_audio_bytes:
-                    self._send_error(
-                        HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                        f"Recording audio exceeds {max_audio_bytes} bytes",
+            try:
+                if parsed.path == "/event":
+                    body = self._read_json_body()
+                    self._send_json(store.update_from_event(body).to_jsonable())
+                elif parsed.path == "/quota/refresh":
+                    self._require_content_type("application/json")
+                    state = store.refresh_quota()
+                    self._send_json({"refreshed": True, "state": state.to_jsonable()})
+                elif parsed.path == "/recording/start":
+                    body = self._read_json_body()
+                    self._send_json(store.start_recording(body))
+                elif parsed.path == "/recording/audio":
+                    self._require_content_type("application/octet-stream")
+                    query = parse_qs(parsed.query)
+                    content_length = self._content_length()
+                    max_audio_bytes = _max_recording_audio_bytes()
+                    if content_length > max_audio_bytes:
+                        raise RequestBodyError(
+                            HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                            f"Recording audio exceeds {max_audio_bytes} bytes",
+                        )
+                    pcm = self._read_raw_body(content_length)
+                    self._send_json(
+                        store.upload_recording_audio(
+                            pcm,
+                            session_id=_first(query, "session_id"),
+                            sample_rate=_int_header(self.headers.get("X-Vibe-Stick-Sample-Rate"), 16000),
+                            channels=_int_header(self.headers.get("X-Vibe-Stick-Channels"), 1),
+                            bits_per_sample=_int_header(self.headers.get("X-Vibe-Stick-Bits-Per-Sample"), 16),
+                        )
                     )
-                    return
-                pcm = self._read_raw_body(content_length)
-                self._send_json(
-                    store.upload_recording_audio(
-                        pcm,
-                        session_id=_first(query, "session_id"),
-                        sample_rate=_int_header(self.headers.get("X-Vibe-Stick-Sample-Rate"), 16000),
-                        channels=_int_header(self.headers.get("X-Vibe-Stick-Channels"), 1),
-                        bits_per_sample=_int_header(self.headers.get("X-Vibe-Stick-Bits-Per-Sample"), 16),
-                    )
-                )
-            elif parsed.path == "/recording/stop":
-                body = self._read_json_body()
-                self._send_json(store.stop_recording(body))
-            else:
-                self._send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
+                elif parsed.path == "/recording/stop":
+                    body = self._read_json_body()
+                    self._send_json(store.stop_recording(body))
+                else:
+                    self._send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
+            except RequestBodyError as exc:
+                self._send_error(exc.status, exc.message)
+            except RecordingConflictError as exc:
+                self._send_error(HTTPStatus.CONFLICT, str(exc))
+            except RecordingRequestError as exc:
+                self._send_error(HTTPStatus.UNPROCESSABLE_ENTITY, str(exc))
+            except ValueError as exc:
+                self._send_error(HTTPStatus.BAD_REQUEST, str(exc) or "Invalid request")
+            except Exception as exc:
+                self._send_internal_error(exc)
 
         def log_message(self, fmt: str, *args: object) -> None:
+            if (
+                self.command == "GET"
+                and urlparse(self.path).path == "/state"
+                and len(args) > 1
+                and str(args[1]) == "200"
+            ):
+                return
             firmware_name = self.headers.get("X-Vibe-Stick-Firmware-Name", "-")
             firmware_version = self.headers.get("X-Vibe-Stick-Firmware-Version", "-")
             firmware_transport = self.headers.get("X-Vibe-Stick-Firmware-Transport", "-")
@@ -418,26 +544,51 @@ def make_handler(store: BridgeStateStore) -> type[BaseHTTPRequestHandler]:
 
         def _read_json_body(self) -> dict[str, Any]:
             length = self._content_length()
+            if length > MAX_JSON_BODY_BYTES:
+                raise RequestBodyError(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    f"JSON body exceeds {MAX_JSON_BODY_BYTES} bytes",
+                )
+            self._require_content_type("application/json")
             if length == 0:
                 return {}
-            raw = self.rfile.read(length)
+            raw = self._read_raw_body(length)
             try:
                 data = json.loads(raw.decode("utf-8"))
-            except json.JSONDecodeError:
-                return {}
-            return data if isinstance(data, dict) else {}
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise RequestBodyError(HTTPStatus.BAD_REQUEST, "Malformed JSON body") from exc
+            if not isinstance(data, dict):
+                raise RequestBodyError(HTTPStatus.BAD_REQUEST, "JSON body must be an object")
+            return data
+
+        def _require_content_type(self, expected: str) -> None:
+            content_type = self.headers.get("Content-Type", "")
+            media_type = content_type.partition(";")[0].strip().lower()
+            if media_type != expected:
+                raise RequestBodyError(
+                    HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                    f"Content-Type must be {expected}",
+                )
 
         def _read_raw_body(self, length: int) -> bytes:
             if length <= 0:
                 return b""
-            return self.rfile.read(length)
+            data = self.rfile.read(length)
+            if len(data) != length:
+                raise RequestBodyError(HTTPStatus.BAD_REQUEST, "Incomplete request body")
+            return data
 
         def _content_length(self) -> int:
-            try:
-                length = int(self.headers.get("Content-Length", "0") or "0")
-            except ValueError:
+            raw = self.headers.get("Content-Length")
+            if raw is None:
                 return 0
-            return max(0, length)
+            try:
+                length = int(raw)
+            except ValueError as exc:
+                raise RequestBodyError(HTTPStatus.BAD_REQUEST, "Invalid Content-Length") from exc
+            if length < 0:
+                raise RequestBodyError(HTTPStatus.BAD_REQUEST, "Invalid Content-Length")
+            return length
 
         def _is_authorized(self) -> bool:
             expected = _bridge_token()
@@ -458,16 +609,27 @@ def make_handler(store: BridgeStateStore) -> type[BaseHTTPRequestHandler]:
         def _send_error(self, status: HTTPStatus, message: str) -> None:
             self._send_json({"error": message}, status=status)
 
+        def _send_internal_error(self, exc: Exception) -> None:
+            print(
+                f"request failed method={self.command} path={urlparse(self.path).path} "
+                f"error={type(exc).__name__}",
+                flush=True,
+            )
+            try:
+                self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Internal server error")
+            except OSError:
+                pass
+
     return VibeStickHandler
 
 
 def run_server(host: str, port: int) -> None:
     _enforce_bind_security(host)
     store = BridgeStateStore()
-    server = ThreadingHTTPServer((host, port), make_handler(store))
+    server = VibeStickHTTPServer((host, port), make_handler(store))
     if not _bridge_token():
         print(
-            "WARNING: VIBE_STICK_BRIDGE_TOKEN is not set; POST endpoints are unauthenticated on loopback only.",
+            "WARNING: VIBE_STICK_BRIDGE_TOKEN is not set; protected endpoints are unauthenticated on loopback only.",
             flush=True,
         )
     print(f"VibeStick Bridge listening on http://{host}:{port}", flush=True)
@@ -476,6 +638,7 @@ def run_server(host: str, port: int) -> None:
 
 def _protected_paths() -> set[str]:
     return {
+        "/state",
         "/event",
         "/quota/refresh",
         "/recording/start",
@@ -497,6 +660,20 @@ def _enforce_bind_security(host: str) -> None:
             "Refusing to bind VibeStick Bridge outside loopback without "
             "VIBE_STICK_BRIDGE_TOKEN. Set a strong shared token or use --host 127.0.0.1."
         )
+    if _host_requires_token(host) and not _bridge_token_is_valid(_bridge_token()):
+        raise SystemExit(
+            f"VIBE_STICK_BRIDGE_TOKEN must contain {MIN_BRIDGE_TOKEN_LENGTH}-256 "
+            "URL-safe characters when binding outside loopback."
+        )
+
+
+def _bridge_token_is_valid(token: str) -> bool:
+    allowed_punctuation = "._~-"
+    return (
+        MIN_BRIDGE_TOKEN_LENGTH <= len(token) <= 256
+        and token.isascii()
+        and all(character.isalnum() or character in allowed_punctuation for character in token)
+    )
 
 
 def _host_requires_token(host: str) -> bool:
@@ -642,6 +819,11 @@ def _collect_alert_events(
                 continue
             seen_event_ids.add(alert.event_id)
             events.append(alert)
+    events.sort(
+        key=lambda alert: alert.timestamp.timestamp()
+        if alert.timestamp is not None
+        else 0.0
+    )
     return tuple(events)
 
 
@@ -693,6 +875,17 @@ def _apply_manual_codex_state(observation: ProviderObservation, state: VibeStick
     observation.alert_type = state.alert.type.value
     observation.alert_message = state.alert.message
     observation.alert_event_id = state.alert.event_id
+    if _observation_has_alert(observation):
+        manual_alert = ProviderAlert(
+            event_id=observation.alert_event_id,
+            alert_type=observation.alert_type,
+            message=observation.alert_message,
+            timestamp=datetime.now(timezone.utc),
+        )
+        observation.alert_events = (manual_alert,)
+        observation.latest_event_timestamp = manual_alert.timestamp
+    else:
+        observation.alert_events = ()
 
 
 def _int_header(raw: str | None, default: int) -> int:

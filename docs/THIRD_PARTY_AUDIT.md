@@ -1,6 +1,6 @@
 # Third-Party Audit
 
-This audit documents the v0.1.1 repository state after cleanup.
+This audit documents the v0.1.5 repository state after cleanup.
 
 | Project / file / dependency | Source | Current use | License status | Risk | Recommendation |
 | --- | --- | --- | --- | --- | --- |

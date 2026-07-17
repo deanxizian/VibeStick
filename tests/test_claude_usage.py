@@ -16,6 +16,7 @@ from vibe_stick.claude.usage import (
     token_from_credentials_json,
     usage_enabled,
 )
+from vibe_stick.claude import usage as usage_module
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "bridge" / "tests" / "fixtures" / "claude_usage_sample.json"
 
@@ -89,6 +90,11 @@ class ClaudeUsageTests(unittest.TestCase):
 
     def test_parse_usage_unknown_fields_return_none(self) -> None:
         self.assertIsNone(parse_usage({"limits": [{"kind": "unknown", "percent": 10}]}))
+
+    def test_non_finite_usage_values_are_ignored(self) -> None:
+        self.assertIsNone(usage_module._number_or_none(float("inf")))
+        self.assertIsNone(usage_module._number_or_none("nan"))
+        self.assertIsNone(usage_module._remaining_percent(float("inf")))
 
     def test_token_from_credentials_json_rejects_expired_token(self) -> None:
         payload = json.dumps({"claudeAiOauth": {"accessToken": "secret-token", "expiresAt": 1000}})

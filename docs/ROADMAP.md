@@ -11,14 +11,21 @@
 - Rebuild a clean public git history.
 - Keep the current prototype runnable.
 
-## v0.1.2
+## v0.1.5
+
+- Notify once when any user-started Codex root conversation completes.
+- Exclude background subagent sessions from completion alerts.
+- Add single-click send and double-click pause controls.
+- Make macOS installation staged, health-checked, and rollback-capable.
+- Harden local config parsing, permissions, and diagnostics.
+- Add Python-version, shell, Swift helper, and ESP-IDF CI coverage.
+
+## Future packaging
 
 - Package the Mac App / helper workflow.
 - Publish GitHub Release artifacts.
 - Attach firmware binaries to releases.
-- Improve install and configuration flow.
 - Improve icon and brand polish.
-- Improve error handling and diagnostics.
 
 ## v0.2.0
 

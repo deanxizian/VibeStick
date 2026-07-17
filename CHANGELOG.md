@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.5
+
+- Notify for completed root conversations across Codex and Claude without subagent noise.
+- Cache provider session summaries so the two-second device poll no longer reparses large JSONL logs.
+- Make recording ownership thread-safe and idempotent, persist stop recovery, validate uploaded PCM, and bound synchronous ASR/external-hook work to the device timeout.
+- Harden the Bridge API with authenticated state reads, bounded request bodies, strict HTTP failures, private atomic persistence, and transcript-safe device responses.
+- Fix StickS3 audio task shutdown, HTTP status propagation, and deferred alerts during recording.
+- Harden install, diagnostics, permissions, documentation, and CI coverage.
+
 ## v0.1.4
 
 Initial public release of VibeStick — a tiny desktop companion for coding agents on M5Stack StickS3.

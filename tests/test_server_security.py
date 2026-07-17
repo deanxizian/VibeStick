@@ -1,8 +1,44 @@
+import http.client
+import json
 import os
+import threading
 import unittest
+from contextlib import contextmanager
 from unittest import mock
 
+from vibe_stick.protocol.state import default_state
 from vibe_stick.server import app
+
+
+class _TestStore:
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+
+    def get_state(self):
+        return default_state()
+
+    def update_from_event(self, body):
+        self.events.append(body)
+        return default_state()
+
+    def refresh_quota(self):
+        return default_state()
+
+
+@contextmanager
+def _running_server(store: _TestStore):
+    try:
+        server = app.VibeStickHTTPServer(("127.0.0.1", 0), app.make_handler(store))
+    except PermissionError as exc:
+        raise unittest.SkipTest("local sockets are unavailable in this sandbox") from exc
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 class ServerSecurityTests(unittest.TestCase):
@@ -23,6 +59,104 @@ class ServerSecurityTests(unittest.TestCase):
     def test_real_token_is_used(self) -> None:
         with mock.patch.dict(os.environ, {"VIBE_STICK_BRIDGE_TOKEN": "abc123-secret"}):
             self.assertEqual(app._bridge_token(), "abc123-secret")
+
+    def test_non_loopback_rejects_short_token(self) -> None:
+        with mock.patch.dict(os.environ, {"VIBE_STICK_BRIDGE_TOKEN": "too-short"}):
+            with self.assertRaises(SystemExit):
+                app._enforce_bind_security("0.0.0.0")
+
+    def test_non_loopback_rejects_non_url_safe_token(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"VIBE_STICK_BRIDGE_TOKEN": "x" * 31 + "!"},
+        ):
+            with self.assertRaises(SystemExit):
+                app._enforce_bind_security("0.0.0.0")
+
+    def test_health_is_public_but_state_requires_token(self) -> None:
+        store = _TestStore()
+        with mock.patch.dict(
+            os.environ,
+            {"VIBE_STICK_BRIDGE_TOKEN": "0123456789abcdef"},
+        ), _running_server(store) as port:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+            connection.request("GET", "/health")
+            health = connection.getresponse()
+            self.assertEqual(health.status, 200)
+            health.read()
+
+            connection.request("GET", "/state")
+            unauthorized = connection.getresponse()
+            self.assertEqual(unauthorized.status, 401)
+            unauthorized.read()
+
+            connection.request(
+                "GET",
+                "/state",
+                headers={"X-Vibe-Stick-Token": "0123456789abcdef"},
+            )
+            authorized = connection.getresponse()
+            payload = json.loads(authorized.read())
+            self.assertEqual(authorized.status, 200)
+            self.assertEqual(payload["bridge_name"], app.BRIDGE_NAME)
+            connection.close()
+
+    def test_malformed_or_non_object_json_is_rejected(self) -> None:
+        store = _TestStore()
+        with mock.patch.dict(os.environ, {}, clear=True), _running_server(store) as port:
+            for body in (b"{bad", b"[]", b"\xff"):
+                with self.subTest(body=body):
+                    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                    connection.request(
+                        "POST",
+                        "/event",
+                        body=body,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 400)
+                    response.read()
+                    connection.close()
+        self.assertEqual(store.events, [])
+
+    def test_oversized_json_is_rejected_without_reading_body(self) -> None:
+        store = _TestStore()
+        with mock.patch.dict(os.environ, {}, clear=True), _running_server(store) as port:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+            connection.putrequest("POST", "/event")
+            connection.putheader("Content-Length", str(app.MAX_JSON_BODY_BYTES + 1))
+            connection.endheaders()
+            response = connection.getresponse()
+            self.assertEqual(response.status, 413)
+            response.read()
+            connection.close()
+
+    def test_browser_simple_content_type_cannot_trigger_event(self) -> None:
+        store = _TestStore()
+        with mock.patch.dict(os.environ, {}, clear=True), _running_server(store) as port:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+            connection.request(
+                "POST",
+                "/event",
+                body=b'{"event":"button_double"}',
+                headers={"Content-Type": "text/plain"},
+            )
+            response = connection.getresponse()
+            self.assertEqual(response.status, 415)
+            response.read()
+            connection.close()
+
+        self.assertEqual(store.events, [])
+
+    def test_empty_browser_post_cannot_start_microphone(self) -> None:
+        store = _TestStore()
+        with mock.patch.dict(os.environ, {}, clear=True), _running_server(store) as port:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+            connection.request("POST", "/recording/start", body=b"")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 415)
+            response.read()
+            connection.close()
 
 
 if __name__ == "__main__":

@@ -26,7 +26,6 @@
 #define AUDIO_MAX_SECONDS 45
 #define AUDIO_MAX_BYTES (VIBE_STICK_AUDIO_SAMPLE_RATE * VIBE_STICK_AUDIO_CHANNELS * \
                          (VIBE_STICK_AUDIO_BITS_PER_SAMPLE / 8) * AUDIO_MAX_SECONDS)
-#define TASK_EXIT_WAIT_MS 800
 #define VIBE_STICK_SOUND_VOLUME 0.40f
 #define VIBE_STICK_SOUND_FRAME_SAMPLES 160
 #define VIBE_STICK_SOUND_FADE_MS 8
@@ -36,9 +35,10 @@
 static const char *TAG = "vibe_audio";
 
 static atomic_bool s_running;
+static atomic_bool s_task_active;
 static bool s_initialized;
 static SemaphoreHandle_t s_audio_mutex;
-static TaskHandle_t s_audio_task;
+static SemaphoreHandle_t s_audio_stopped;
 static i2s_chan_handle_t s_tx_handle;
 static i2s_chan_handle_t s_rx_handle;
 static bool s_tx_enabled;
@@ -329,13 +329,20 @@ static void audio_task(void *arg)
     (void)arg;
     int16_t frame[AUDIO_FRAME_SAMPLES];
     size_t dropped = 0;
+    unsigned read_failures = 0;
 
     while (atomic_load(&s_running)) {
         esp_err_t err = esp_codec_dev_read(s_codec, frame, sizeof(frame));
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "codec read failed: %s", esp_err_to_name(err));
+            read_failures++;
+            if (read_failures == 1 || read_failures % 20 == 0) {
+                ESP_LOGW(TAG, "codec read failed count=%u: %s",
+                         read_failures, esp_err_to_name(err));
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
+        read_failures = 0;
         if (s_audio_len + sizeof(frame) <= s_audio_capacity) {
             memcpy(s_audio_buffer + s_audio_len, frame, sizeof(frame));
             s_audio_len += sizeof(frame);
@@ -346,7 +353,8 @@ static void audio_task(void *arg)
 
     ESP_LOGI(TAG, "recorded %u bytes dropped=%u", (unsigned)s_audio_len, (unsigned)dropped);
     release_session_resources();
-    s_audio_task = NULL;
+    atomic_store(&s_task_active, false);
+    xSemaphoreGive(s_audio_stopped);
     vTaskDelete(NULL);
 }
 
@@ -355,6 +363,10 @@ esp_err_t vibe_audio_init(void)
     if (!s_audio_mutex) {
         s_audio_mutex = xSemaphoreCreateMutex();
         ESP_RETURN_ON_FALSE(s_audio_mutex != NULL, ESP_ERR_NO_MEM, TAG, "audio mutex");
+    }
+    if (!s_audio_stopped) {
+        s_audio_stopped = xSemaphoreCreateBinary();
+        ESP_RETURN_ON_FALSE(s_audio_stopped != NULL, ESP_ERR_NO_MEM, TAG, "audio stopped semaphore");
     }
     s_initialized = true;
     return ESP_OK;
@@ -369,10 +381,14 @@ esp_err_t vibe_audio_start(void)
     ESP_RETURN_ON_FALSE(s_audio_mutex != NULL, ESP_ERR_INVALID_STATE, TAG, "audio mutex missing");
     ESP_RETURN_ON_FALSE(xSemaphoreTake(s_audio_mutex, pdMS_TO_TICKS(250)) == pdTRUE,
                         ESP_ERR_TIMEOUT, TAG, "audio busy");
-    if (atomic_load(&s_running) || s_audio_task != NULL || s_codec != NULL || s_tx_handle != NULL || s_rx_handle != NULL) {
+    if (atomic_load(&s_running) || atomic_load(&s_task_active) ||
+        s_codec != NULL || s_tx_handle != NULL || s_rx_handle != NULL) {
         xSemaphoreGive(s_audio_mutex);
         return ESP_ERR_INVALID_STATE;
     }
+
+    /* Consume a completion left by a task that stopped without an explicit stop call. */
+    (void)xSemaphoreTake(s_audio_stopped, 0);
 
     vibe_audio_clear();
     s_audio_capacity = AUDIO_MAX_BYTES;
@@ -401,9 +417,11 @@ esp_err_t vibe_audio_start(void)
     }
 
     atomic_store(&s_running, true);
-    BaseType_t ok = xTaskCreatePinnedToCore(audio_task, "vibe_audio", 32768, NULL, 5, &s_audio_task, 1);
+    atomic_store(&s_task_active, true);
+    BaseType_t ok = xTaskCreatePinnedToCore(audio_task, "vibe_audio", 32768, NULL, 5, NULL, 1);
     if (ok != pdPASS) {
         atomic_store(&s_running, false);
+        atomic_store(&s_task_active, false);
         release_session_resources();
         vibe_audio_clear();
         xSemaphoreGive(s_audio_mutex);
@@ -416,24 +434,32 @@ esp_err_t vibe_audio_start(void)
 
 esp_err_t vibe_audio_stop(void)
 {
-    if (!atomic_load(&s_running)) {
+    if (!atomic_load(&s_task_active)) {
+        atomic_store(&s_running, false);
         return ESP_OK;
     }
     atomic_store(&s_running, false);
-    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(TASK_EXIT_WAIT_MS);
-    while (s_audio_task != NULL) {
-        if (xTaskGetTickCount() >= deadline) {
-            ESP_LOGW(TAG, "audio task stop timeout");
-            return ESP_ERR_TIMEOUT;
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
+    ESP_RETURN_ON_FALSE(s_audio_stopped != NULL, ESP_ERR_INVALID_STATE, TAG,
+                        "audio stopped semaphore missing");
+
+    /*
+     * The task owns the codec and capture buffer until it signals completion.
+     * Waiting without a timeout is intentional: callers must never upload or
+     * free the buffer while the capture task can still write to it. The pinned
+     * esp_codec_dev 1.5.10 I2S backend bounds each read to 1000 RTOS ticks, so
+     * clearing s_running gives the task a bounded path to this notification;
+     * force-deleting it would strand live codec/I2S resources.
+     */
+    ESP_RETURN_ON_FALSE(xSemaphoreTake(s_audio_stopped, portMAX_DELAY) == pdTRUE,
+                        ESP_FAIL, TAG, "wait for audio task");
+    ESP_RETURN_ON_FALSE(!atomic_load(&s_task_active), ESP_ERR_INVALID_STATE, TAG,
+                        "audio task still active");
     return ESP_OK;
 }
 
 bool vibe_audio_is_recording(void)
 {
-    return atomic_load(&s_running) || s_audio_task != NULL;
+    return atomic_load(&s_running) || atomic_load(&s_task_active);
 }
 
 esp_err_t vibe_audio_play_sound(agent_sound_t sound)
@@ -483,6 +509,13 @@ esp_err_t vibe_audio_play_sound(agent_sound_t sound)
 
 const uint8_t *vibe_audio_data(size_t *len)
 {
+    if (atomic_load(&s_task_active)) {
+        if (len) {
+            *len = 0;
+        }
+        ESP_LOGW(TAG, "audio data requested while capture task is active");
+        return NULL;
+    }
     if (len) {
         *len = s_audio_len;
     }
@@ -491,6 +524,10 @@ const uint8_t *vibe_audio_data(size_t *len)
 
 void vibe_audio_clear(void)
 {
+    if (atomic_load(&s_task_active)) {
+        ESP_LOGE(TAG, "refusing to clear audio while capture task is active");
+        return;
+    }
     if (s_audio_buffer) {
         heap_caps_free(s_audio_buffer);
         s_audio_buffer = NULL;

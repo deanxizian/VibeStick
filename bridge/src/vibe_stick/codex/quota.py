@@ -5,6 +5,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from vibe_stick.config.storage import atomic_write_text
+
 
 @dataclass
 class QuotaSnapshot:
@@ -22,6 +24,8 @@ def load_quota(path: Path) -> QuotaSnapshot:
         data = json.loads(path.read_text())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return QuotaSnapshot()
+    if not isinstance(data, dict):
+        return QuotaSnapshot()
     return QuotaSnapshot(
         quota_5h_remaining=_percent_or_none(data.get("quota_5h_remaining")),
         quota_7d_remaining=_percent_or_none(data.get("quota_7d_remaining")),
@@ -31,15 +35,18 @@ def load_quota(path: Path) -> QuotaSnapshot:
 
 
 def save_quota(path: Path, snapshot: QuotaSnapshot) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(snapshot.to_jsonable(), indent=2) + "\n")
+    atomic_write_text(
+        path,
+        json.dumps(snapshot.to_jsonable(), indent=2) + "\n",
+        skip_if_unchanged=True,
+    )
 
 
 def _percent_or_none(value: object) -> int | None:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
     return max(0, min(100, number))

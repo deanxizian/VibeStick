@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 set -eu
+umask 077
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 ENV_PATH="$ROOT_DIR/.env"
@@ -14,6 +15,13 @@ is_placeholder_token() {
       ;;
   esac
   return 1
+}
+
+is_valid_token() {
+  printf '%s\n' "${1:-}" | awk '
+    length($0) >= 32 && length($0) <= 256 && $0 ~ /^[[:alnum:]_.~-]+$/ { ok = 1 }
+    END { exit(ok ? 0 : 1) }
+  '
 }
 
 is_placeholder_host() {
@@ -37,13 +45,40 @@ env_value() {
       if (k == key) {
         sub(/^[^=]*=/, "")
         gsub(/^[[:space:]]+|[[:space:]]+$/, "")
-        gsub(/^"/, "")
-        gsub(/"$/, "")
+        if ((substr($0, 1, 1) == "\"" && substr($0, length($0), 1) == "\"") ||
+            (substr($0, 1, 1) == "\047" && substr($0, length($0), 1) == "\047")) {
+          $0 = substr($0, 2, length($0) - 2)
+        }
         print
         exit
       }
     }
   ' "$file"
+}
+
+validate_unique_env_keys() {
+  file="$1"
+  [ -f "$file" ] || return 0
+  awk -F= '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    {
+      key = $1
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      if (key != "" && ++seen[key] > 1) {
+        printf "Duplicate .env key: %s\n", key > "/dev/stderr"
+        bad = 1
+      }
+    }
+    END { exit(bad ? 1 : 0) }
+  ' "$file"
+}
+
+shell_quote() {
+  # Emit one POSIX-shell-safe word. The bridge's dotenv loader also accepts
+  # this representation without evaluating substitutions.
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
 }
 
 secret_value() {
@@ -61,12 +96,41 @@ secret_value() {
   ' "$file"
 }
 
+validate_unique_secret_defines() {
+  file="$1"
+  [ -f "$file" ] || return 0
+  awk '
+    $1 == "#define" && $2 != "" && ++seen[$2] > 1 {
+      printf "Duplicate firmware secret define: %s\n", $2 > "/dev/stderr"
+      bad = 1
+    }
+    END { exit(bad ? 1 : 0) }
+  ' "$file"
+}
+
+valid_c_string_define() {
+  key="$1"
+  file="$2"
+  awk -v key="$key" '
+    $1 == "#define" && $2 == key {
+      count++
+      value = $0
+      sub(/^[[:space:]]*#define[[:space:]]+[^[:space:]]+[[:space:]]+/, "", value)
+      if (value ~ /^"([^"\\]|\\.)*"[[:space:]]*$/) {
+        valid++
+      }
+    }
+    END { exit(count == 1 && valid == 1 ? 0 : 1) }
+  ' "$file"
+}
+
 set_env_value() {
   key="$1"
   value="$2"
   file="$3"
   tmp="$file.tmp.$$"
-  awk -v key="$key" -v value="$value" '
+  quoted_value="$(shell_quote "$value")"
+  if ! VIBE_STICK_ENV_VALUE="$quoted_value" awk -v key="$key" '
     BEGIN { done = 0 }
     /^[[:space:]]*#/ { print; next }
     {
@@ -75,7 +139,7 @@ set_env_value() {
       sub(/=.*/, "", k)
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", k)
       if (k == key) {
-        print key "=" value
+        print key "=" ENVIRON["VIBE_STICK_ENV_VALUE"]
         done = 1
         next
       }
@@ -83,10 +147,13 @@ set_env_value() {
     }
     END {
       if (!done) {
-        print key "=" value
+        print key "=" ENVIRON["VIBE_STICK_ENV_VALUE"]
       }
     }
-  ' "$file" > "$tmp"
+  ' "$file" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
   mv "$tmp" "$file"
 }
 
@@ -95,20 +162,38 @@ set_secret_value() {
   value="$2"
   file="$3"
   tmp="$file.tmp.$$"
-  awk -v key="$key" -v value="$value" '
+  newline='
+'
+  carriage_return="$(printf '\r')"
+  case "$value" in
+    *"$newline"*|*"$carriage_return"*)
+      printf '%s\n' "ERROR: $key cannot contain a literal newline or carriage return." >&2
+      return 1
+      ;;
+  esac
+  escaped_value="$(printf '%s' "$value" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  if ! VIBE_STICK_SECRET_VALUE="$escaped_value" awk -v key="$key" '
     BEGIN { done = 0 }
     $1 == "#define" && $2 == key {
-      print "#define " key " \"" value "\""
+      print "#define " key " \"" ENVIRON["VIBE_STICK_SECRET_VALUE"] "\""
       done = 1
       next
     }
     { print }
     END {
       if (!done) {
-        print "#define " key " \"" value "\""
+        print "#define " key " \"" ENVIRON["VIBE_STICK_SECRET_VALUE"] "\""
       }
     }
-  ' "$file" > "$tmp"
+  ' "$file" > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! valid_c_string_define "$key" "$tmp"; then
+    printf '%s\n' "ERROR: Failed to write a valid C string for $key." >&2
+    rm -f "$tmp"
+    return 1
+  fi
   mv "$tmp" "$file"
 }
 
@@ -118,6 +203,7 @@ if [ ! -f "$ENV_PATH" ]; then
 else
   printf '%s\n' "Kept existing .env."
 fi
+chmod 600 "$ENV_PATH"
 
 if [ ! -f "$SECRETS_PATH" ]; then
   cp "$SECRETS_EXAMPLE_PATH" "$SECRETS_PATH"
@@ -125,6 +211,20 @@ if [ ! -f "$SECRETS_PATH" ]; then
 else
   printf '%s\n' "Kept existing firmware/sticks3/include/vibe_stick_secrets.h."
 fi
+chmod 600 "$SECRETS_PATH"
+validate_unique_env_keys "$ENV_PATH"
+validate_unique_secret_defines "$SECRETS_PATH"
+
+for required_secret in \
+  VIBE_STICK_WIFI_SSID \
+  VIBE_STICK_WIFI_PASSWORD \
+  VIBE_STICK_BRIDGE_HOST \
+  VIBE_STICK_BRIDGE_TOKEN; do
+  if ! valid_c_string_define "$required_secret" "$SECRETS_PATH"; then
+    printf '%s\n' "ERROR: $required_secret must be one valid, quoted C string in $SECRETS_PATH." >&2
+    exit 1
+  fi
+done
 
 project_root="$(env_value VIBE_STICK_PROJECT_ROOT "$ENV_PATH")"
 if [ -z "$project_root" ]; then
@@ -134,6 +234,15 @@ fi
 
 env_token="$(env_value VIBE_STICK_BRIDGE_TOKEN "$ENV_PATH")"
 secret_token="$(secret_value VIBE_STICK_BRIDGE_TOKEN "$SECRETS_PATH")"
+
+if ! is_placeholder_token "$env_token" && ! is_valid_token "$env_token"; then
+  printf '%s\n' "ERROR: .env bridge token must be 32-256 URL-safe characters (letters, digits, . _ ~ -)." >&2
+  exit 1
+fi
+if ! is_placeholder_token "$secret_token" && ! is_valid_token "$secret_token"; then
+  printf '%s\n' "ERROR: Firmware bridge token must be 32-256 URL-safe characters (letters, digits, . _ ~ -)." >&2
+  exit 1
+fi
 
 if ! is_placeholder_token "$env_token" && ! is_placeholder_token "$secret_token"; then
   if [ "$env_token" = "$secret_token" ]; then

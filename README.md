@@ -15,8 +15,9 @@ VibeStick targets M5Stack StickS3 hardware and is not an official M5Stack projec
 - [ ] M5Stack StickS3 and a USB-C data cable.
 - [ ] A Mac on the same network as the StickS3.
 - [ ] Wi-Fi name and password. The Wi-Fi must be 2.4 GHz; StickS3 / ESP32-S3 does not support 5 GHz Wi-Fi.
+- [ ] Python 3.11 or newer (Python 3.12 is recommended) and the Xcode Command Line Tools, which provide `swiftc`.
 - [ ] To show Claude 5H/7D usage: this feature is off by default (safer). It needs the Claude Code CLI (run `claude` then `/login` in Terminal) and `VIBE_STICK_CLAUDE_USAGE=on` in `.env`.
-- [ ] An ASR API key for speech transcription. Recommended: SiliconFlow at <https://cloud.siliconflow.cn/i/7ZCoy9fU>. It works directly in China, has free quota, and is OpenAI-compatible. The demo video uses SiliconFlow. You can also use another OpenAI-compatible ASR provider's `base_url` and model name instead.
+- [ ] An ASR API key for speech transcription. Recommended: SiliconFlow at its official entry point, <https://cloud.siliconflow.cn>. It works directly in China, has free quota, and is OpenAI-compatible. The demo video uses SiliconFlow. You can also use another OpenAI-compatible ASR provider's `base_url` and model name instead.
 
 Building the firmware needs ESP-IDF v5.5.x — a one-time toolchain install (~1 GB, a few minutes). The install steps below set it up for you; no need to pre-install. Reference: Espressif's [ESP-IDF v5.5.1 ESP32-S3 guide](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32s3/get-started/index.html).
 
@@ -51,6 +52,17 @@ VIBE_STICK_ASR_BASE_URL=https://api.siliconflow.cn/v1
 VIBE_STICK_ASR_API_KEY=your-siliconflow-key
 VIBE_STICK_ASR_MODEL=FunAudioLLM/SenseVoiceSmall
 ```
+
+VibeStick reads `.env` as data; it does not execute it as a shell script. Use only `VIBE_STICK_*` keys or `CLAUDE_CODE_OAUTH_TOKEN`, and quote values that contain whitespace. Do not run `source .env`.
+
+Check the local runtime before installing:
+
+```sh
+python3 --version
+xcrun --find swiftc
+```
+
+If `python3` is older than 3.11, install a current Python from [python.org](https://www.python.org/downloads/macos/) or Homebrew, then put its absolute path in `.env`, for example `VIBE_STICK_PYTHON=/opt/homebrew/bin/python3.12` on Apple Silicon. Do not run the installer with `sudo`.
 
 3. 👤 Plug the StickS3 into the Mac with the USB-C data cable.
 
@@ -93,7 +105,11 @@ Wait for `Hash of data verified`.
 ./scripts/install.sh
 ```
 
-9. 👤 When macOS prompts that `python3.14` wants Accessibility control, click "Open System Settings" and enable it. This permission is needed for paste injection.
+The installer builds a staged copy, switches LaunchAgents only after preflight checks pass, and verifies `/health`; if activation fails, it restores the previous installed copy.
+
+The StickS3 transport is plain HTTP. The shared token authorizes protected requests, but it is not encrypted on the network and does not prevent passive capture or replay. Use VibeStick only on a private, trusted LAN, do not expose port `8765` to the internet, and restrict it with the macOS firewall.
+
+9. 👤 When macOS prompts that the configured Python executable or `osascript` wants Accessibility control, click "Open System Settings" and enable it. This permission is needed for paste injection.
 
 10. Check the setup:
 
@@ -108,6 +124,14 @@ If Codex works but the Claude column shows `--%`, that is expected: Claude usage
 11. 👤 Open any text box, long-press the front blue button, speak, and release. VibeStick should transcribe and paste the text automatically. Single-click the blue button to press Return and send the draft. Double-click it to stop the current Codex turn; the task remains available to continue.
 
 For development without installing LaunchAgents, run `./scripts/dev.sh` from the repository root instead of `./scripts/install.sh`.
+
+### Uninstall
+
+```sh
+./scripts/uninstall.sh
+```
+
+The default uninstall stops and removes both LaunchAgents but deliberately retains `~/Library/Application Support/VibeStick/`, including the installed config, runtime, logs, cached state, transcripts, and recordings. To delete that installed data too, run `./scripts/uninstall.sh --purge`. Neither mode deletes the repository's `.env` or `firmware/sticks3/include/vibe_stick_secrets.h`.
 
 ## Troubleshooting
 
@@ -131,7 +155,7 @@ Use a 2.4 GHz Wi-Fi network. StickS3 / ESP32-S3 does not support 5 GHz Wi-Fi.
 
 ### Recording transcribes but does not paste
 
-Grant Accessibility permission to the Python runner that performs paste injection. On macOS, open System Settings -> Privacy & Security -> Accessibility, then enable `python3.14` or the terminal / launcher that runs VibeStick.
+Grant Accessibility permission to the configured Python runner that performs paste injection. On macOS, open System Settings -> Privacy & Security -> Accessibility, then enable that Python executable or the terminal / launcher that runs VibeStick.
 
 ### "No transcription adapter configured"
 
@@ -151,24 +175,30 @@ open -e .env
 
 ### Transcription fails or times out with SSL/network errors
 
-The ASR provider is usually unreachable from your current network. For users in China, try SiliconFlow at <https://cloud.siliconflow.cn/i/7ZCoy9fU>. Otherwise configure a reachable OpenAI-compatible ASR provider or your network proxy.
+The ASR provider is usually unreachable from your current network. For users in China, try SiliconFlow at its official entry point, <https://cloud.siliconflow.cn>. Otherwise configure a reachable OpenAI-compatible ASR provider or your network proxy.
 
 ## Configuration
 
 Do not commit real API keys, local tokens, Wi-Fi credentials, local logs, or generated recording files.
 
-Empty values in `.env` generally mean "use the built-in default". `scripts/dev.sh` loads `.env` from the repository root. `scripts/install.sh` copies `.env` to `~/Library/Application Support/VibeStick/.env`, and the LaunchAgent runner loads that installed file.
+Empty values in `.env` generally mean "use the built-in default". The scripts parse `.env` without shell evaluation; supported names are `VIBE_STICK_*` and `CLAUDE_CODE_OAUTH_TOKEN`. Quote values containing whitespace, and do not use inline shell commands or `source .env`. `scripts/dev.sh` reads the repository copy. `scripts/install.sh` copies it to `~/Library/Application Support/VibeStick/.env`, and the LaunchAgent runner reads that installed file.
 
 ### Core settings
 
-- `VIBE_STICK_PROJECT_ROOT`: local project used by Bridge actions and as the fallback display name.
+- `VIBE_STICK_PROJECT_ROOT`: fallback project path/display name for Bridge state; Codex observation still covers every user-started root conversation on this Mac.
 - `VIBE_STICK_PROJECT_NAME`: optional display-name override.
 - Codex observation covers every user-started root conversation on this Mac. Background subagents are excluded.
 - `VIBE_STICK_PROVIDER`: active provider selection, `auto`, `codex`, or `claude`; default `auto`.
 - `VIBE_STICK_BRIDGE_TOKEN`: shared token required whenever the bridge binds outside loopback, such as `0.0.0.0`.
 - `VIBE_STICK_MAX_RECORDING_AUDIO_BYTES`: max `/recording/audio` body size, default `2000000`.
 - `VIBE_STICK_RECORDING_USE_MAC_MIC`: set to `0` to disable Mac microphone fallback.
+- `VIBE_STICK_RECORDING_START_CMD` / `VIBE_STICK_RECORDING_STOP_CMD`: advanced external-recorder hooks. Both receive session JSON on stdin; a successful stop hook must print the transcript on stdout.
 - `VIBE_STICK_AUTO_ENTER`: set to `1` to press Return immediately after pasting. The default is `0`, which leaves the transcript as a draft so the blue-button single click can send it.
+- `VIBE_STICK_RECORDING_START_TIMEOUT_SECONDS`: start-hook budget, default and maximum `2`; keeps the response within the firmware's 2.5-second request timeout.
+- `VIBE_STICK_RECORDING_STOP_TIMEOUT_SECONDS`: synchronous stop-hook budget, default `15` seconds with a hard maximum of `18`.
+- `VIBE_STICK_RECORDING_RETENTION_DAYS`: recording-media retention, default `7` days; `0` removes media on the next cleanup.
+- `VIBE_STICK_RECORDING_LEASE_SECONDS`: reclaims an abandoned StickS3 session after `90` seconds by default (range `60`–`600`).
+- `VIBE_STICK_STORE_TRANSCRIPTS`: set to `1` only when transcript text should be persisted in `recording.json`; default `0` avoids storing it.
 
 ### ASR option 1: SiliconFlow (recommended default)
 
@@ -178,9 +208,11 @@ VIBE_STICK_ASR_BASE_URL=https://api.siliconflow.cn/v1
 VIBE_STICK_ASR_API_KEY=your-siliconflow-key
 VIBE_STICK_ASR_MODEL=FunAudioLLM/SenseVoiceSmall
 VIBE_STICK_ASR_LANGUAGE=zh
-VIBE_STICK_ASR_TIMEOUT_SECONDS=15
+VIBE_STICK_ASR_TIMEOUT_SECONDS=10
 VIBE_STICK_ASR_ATTEMPTS=2
 ```
+
+With two attempts, each request receives about 8.8 seconds so cloud ASR stays inside the 18-second wall-clock budget and leaves time for paste injection before the device's 30-second timeout.
 
 Audio sent to a cloud ASR provider leaves the Mac.
 
@@ -208,10 +240,10 @@ The legacy aliases `VIBE_STICK_GROQ_API_KEY`, `VIBE_STICK_GROQ_MODEL`, and `VIBE
 
 ```sh
 VIBE_STICK_TRANSCRIBE_CMD=/path/to/transcribe-command
-VIBE_STICK_TRANSCRIBE_TIMEOUT_SECONDS=120
+VIBE_STICK_TRANSCRIBE_TIMEOUT_SECONDS=15
 ```
 
-The command receives the recording session JSON on stdin and should print the final transcript to stdout.
+The command receives the recording session JSON on stdin and should print the final transcript to stdout. Configured command and recording-hook values are executed through `/bin/sh`, so treat them as trusted local code. Their input/output is bounded, and timeout cleanup terminates the command process group. The timeout is capped by the same synchronous stop budget.
 
 ### Claude usage
 
@@ -222,6 +254,8 @@ To see Claude 5H/7D usage, use `VIBE_STICK_PROVIDER=claude` or `VIBE_STICK_PROVI
 - `VIBE_STICK_CLAUDE_USAGE_INTERVAL_SECONDS`: Claude usage poll cadence, default `300`, minimum `30`.
 
 Claude usage support calls an undocumented Anthropic endpoint using the user's local Claude Code subscription credentials and client headers. It is opt-in, may break without notice, and never exposes the token or raw endpoint response through the bridge HTTP API. If no successful Claude usage snapshot has ever been captured, the StickS3 shows `--%`; after a successful snapshot, temporary usage refresh failures keep the last known values and mark them stale.
+
+Because Bridge traffic is plain HTTP, treat `VIBE_STICK_BRIDGE_TOKEN` as a trusted-LAN control rather than protection against network sniffing. If a device is lost or used on an untrusted network, rotate the token in both local config files and reflash the firmware; rotate the Wi-Fi password as appropriate.
 
 ## Project layout
 
@@ -243,7 +277,8 @@ VibeStick/
 ```sh
 python3 -m compileall -q bridge/src tests
 PYTHONPATH=bridge/src python3 -m unittest discover -s tests
-bash -n scripts/setup.sh scripts/doctor.sh scripts/install.sh
+sh -n scripts/*.sh
+bash -n scripts/*.sh
 ```
 
 Firmware builds still require ESP-IDF:
@@ -253,6 +288,9 @@ cd firmware/sticks3
 . $HOME/esp/esp-idf/export.sh
 idf.py build
 ```
+
+The v0.1.5 review and remaining-risk register are in
+[`docs/CODE_AUDIT_2026-07-17.md`](docs/CODE_AUDIT_2026-07-17.md).
 
 ## Current limits
 

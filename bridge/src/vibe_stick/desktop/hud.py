@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from typing import Any
 
 from vibe_stick.config.paths import HUD_STATE_PATH, ensure_app_support
+from vibe_stick.config.storage import atomic_write_text
 
 HUD_TEXT = {
     "listening": "正在聆听",
@@ -48,17 +48,7 @@ def hide_hud(*, delay_seconds: float = 0.0) -> None:
 def _write_hud_state(payload: dict[str, Any]) -> None:
     ensure_app_support()
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
-    tmp_path = HUD_STATE_PATH.with_suffix(".json.tmp")
     try:
-        tmp_path.write_text(data, encoding="utf-8")
-        tmp_path.replace(HUD_STATE_PATH)
+        atomic_write_text(HUD_STATE_PATH, data)
     except OSError as exc:
         print(f"hud state write failed path={HUD_STATE_PATH} error={exc}", flush=True)
-        _cleanup_tmp(tmp_path)
-
-
-def _cleanup_tmp(path: Path) -> None:
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass

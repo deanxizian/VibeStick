@@ -4,9 +4,18 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   bridge-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Check out repository
@@ -15,10 +24,54 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Compile Python sources
         run: python3 -m compileall -q bridge/src tests
 
       - name: Run unit tests
         run: PYTHONPATH=bridge/src python3 -m unittest discover -s tests
+
+  shell-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check POSIX shell syntax
+        run: sh -n scripts/*.sh
+
+      - name: Check Bash parse compatibility
+        run: bash -n scripts/*.sh
+
+  macos-helper-build:
+    runs-on: macos-14
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Type-check HUD helper
+        run: xcrun swiftc -typecheck app/macos/VibeStickHUD/main.swift -framework AppKit -framework QuartzCore
+
+      - name: Type-check microphone helper
+        run: xcrun swiftc -typecheck bridge/tools/vibe_stick_mic_recorder.swift -framework AVFoundation
+
+      - name: Check scripts with macOS sh
+        run: sh -n scripts/*.sh
+
+  firmware-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: espressif/idf:v5.5.1
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build StickS3 firmware with ESP-IDF 5.5.1
+        working-directory: firmware/sticks3
+        run: idf.py build

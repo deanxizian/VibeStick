@@ -59,9 +59,11 @@ Bridge state is stored under:
 
 ## Transport
 
-v0.1.1 uses HTTP over Wi-Fi.
+v0.1.5 uses HTTP over Wi-Fi.
 
 BLE is not part of the current mainline transport. USB is used for flashing and serial logs, not for runtime state transport.
+
+HTTP traffic is not encrypted. The shared token authorizes protected requests but can be captured and replayed by an observer on the same network. The supported deployment boundary is a private, trusted LAN with port `8765` blocked from the internet.
 
 ## State Flow
 
@@ -85,9 +87,11 @@ BLE is not part of the current mainline transport. USB is used for flashing and 
 
 Codex status is inferred from local Codex process/session activity and recent session event payloads. Quota is inferred from `token_count` events containing `rate_limits`. This is a local observation strategy, not an official quota API.
 
+Codex observation covers all user-started root conversations visible in local session data. Background subagents are excluded. A completion in any root conversation can publish an alert even while another conversation keeps the aggregate screen status at `RUNNING`.
+
 The StickS3 provider surface is limited to the providers explicitly compiled into the firmware.
 
-## v0.1.1 Limits
+## v0.1.5 Limits
 
 - No packaged Mac App.
 - No signed firmware release artifact.

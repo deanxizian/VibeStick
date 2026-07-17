@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
+import queue
+import threading
 import time
 import tomllib
 import urllib.error
@@ -12,11 +13,17 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from vibe_stick.command_runner import run_json_command_hook
 from vibe_stick.config.paths import APP_SUPPORT_DIR
 
 GROQ_ASR_BASE_URL = "https://api.groq.com/openai/v1"
 DEFAULT_ASR_MODEL = "whisper-large-v3-turbo"
 DEFAULT_ASR_LANGUAGE = "zh"
+MAX_SYNCHRONOUS_TRANSCRIPTION_SECONDS = 18
+MAX_ASR_RESPONSE_BYTES = 1_000_000
+MAX_TRANSCRIPT_CHARACTERS = 100_000
+MAX_ABANDONED_ASR_WORKERS = 2
+_ASR_WORKER_SLOTS = threading.BoundedSemaphore(MAX_ABANDONED_ASR_WORKERS)
 
 
 @dataclass
@@ -58,33 +65,36 @@ class TranscriptionAdapter:
                 source="env",
             )
 
-        command = os.environ.get("VIBE_STICK_TRANSCRIBE_CMD", "").strip()
-        if not command:
+        command_result = run_json_command_hook(
+            "VIBE_STICK_TRANSCRIBE_CMD",
+            session_payload,
+            timeout=_command_timeout_seconds(),
+        )
+        if command_result is None:
             return self._transcribe_with_configured_asr(session_payload)
-
-        try:
-            result = subprocess.run(
-                command,
-                input=json.dumps(session_payload),
-                shell=True,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_command_timeout_seconds(),
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        if command_result.error:
             return TranscriptionResult(
                 success=False,
-                message=f"Transcription command failed: {exc}",
+                message=f"Transcription command failed: {command_result.error}",
                 source="command",
             )
 
-        transcript = result.stdout.strip()
-        if result.returncode != 0:
-            message = (result.stderr or result.stdout or "Transcription command failed").strip()
+        transcript = command_result.stdout.strip()
+        if command_result.returncode != 0:
+            message = (
+                command_result.stderr
+                or command_result.stdout
+                or "Transcription command failed"
+            ).strip()
             return TranscriptionResult(success=False, message=message, source="command")
         if not transcript:
             return TranscriptionResult(success=False, message="Transcription command returned no text", source="command")
+        if len(transcript) > MAX_TRANSCRIPT_CHARACTERS:
+            return TranscriptionResult(
+                success=False,
+                message="Transcription command returned too much text",
+                source="command",
+            )
         return TranscriptionResult(
             text=transcript,
             success=True,
@@ -119,12 +129,12 @@ class TranscriptionAdapter:
 
 
 def _command_timeout_seconds() -> int:
-    raw = os.environ.get("VIBE_STICK_TRANSCRIBE_TIMEOUT_SECONDS", "120")
+    raw = os.environ.get("VIBE_STICK_TRANSCRIBE_TIMEOUT_SECONDS", "15")
     try:
         value = int(raw)
     except ValueError:
-        return 120
-    return max(5, min(600, value))
+        return 15
+    return max(5, min(MAX_SYNCHRONOUS_TRANSCRIPTION_SECONDS, value))
 
 
 def _asr_timeout_seconds() -> int:
@@ -268,12 +278,77 @@ def _asr_config_paths() -> list[Path]:
 def _transcribe_openai_compatible(audio_file: Path, config: dict[str, str]) -> TranscriptionResult:
     source = config.get("provider") or "openai-compatible"
     label = _asr_label(source)
+    worker_slots = _ASR_WORKER_SLOTS
+    if not worker_slots.acquire(blocking=False):
+        return TranscriptionResult(
+            success=False,
+            message=f"{label} transcription is busy after earlier timeouts",
+            source=source,
+        )
+
+    result_queue: queue.Queue[TranscriptionResult] = queue.Queue(maxsize=1)
+
+    def run() -> None:
+        try:
+            result = _transcribe_openai_compatible_blocking(audio_file, config)
+        except Exception as exc:  # A provider adapter must not escape into HTTP handling.
+            result = TranscriptionResult(
+                success=False,
+                message=f"{label} transcription failed: {type(exc).__name__}",
+                source=source,
+            )
+        try:
+            result_queue.put_nowait(result)
+        finally:
+            worker_slots.release()
+
+    worker = threading.Thread(
+        target=run,
+        name="vibestick-asr",
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except RuntimeError:
+        worker_slots.release()
+        return TranscriptionResult(
+            success=False,
+            message=f"{label} transcription worker could not start",
+            source=source,
+        )
+    try:
+        return result_queue.get(timeout=MAX_SYNCHRONOUS_TRANSCRIPTION_SECONDS)
+    except queue.Empty:
+        # urllib's timeout is an inactivity timeout, not a wall-clock deadline.
+        # The daemon may finish later, but it cannot paste or mutate a session;
+        # the semaphore bounds how many such workers can remain in flight.
+        return TranscriptionResult(
+            success=False,
+            message=f"{label} transcription exceeded the device request deadline",
+            source=source,
+        )
+
+
+def _transcribe_openai_compatible_blocking(audio_file: Path, config: dict[str, str]) -> TranscriptionResult:
+    source = config.get("provider") or "openai-compatible"
+    label = _asr_label(source)
     if not config.get("api_key") or not config.get("base_url"):
         return TranscriptionResult(success=False, message="No transcription adapter configured", source="none")
     last_result = TranscriptionResult(success=False, message=f"{label} transcription failed", source=source)
     attempts = _asr_attempt_count()
+    retry_delay_budget = sum(min(2.0, 0.4 * attempt) for attempt in range(1, attempts))
+    per_attempt_timeout = max(
+        3.0,
+        (MAX_SYNCHRONOUS_TRANSCRIPTION_SECONDS - retry_delay_budget) / attempts,
+    )
+    per_attempt_timeout = min(float(_asr_timeout_seconds()), per_attempt_timeout)
     for attempt in range(1, attempts + 1):
-        result = _transcribe_openai_compatible_once(audio_file, config, attempt)
+        result = _transcribe_openai_compatible_once(
+            audio_file,
+            config,
+            attempt,
+            timeout_seconds=per_attempt_timeout,
+        )
         if result.success:
             return result
         last_result = result
@@ -288,6 +363,7 @@ def _transcribe_openai_compatible_once(
     config: dict[str, str],
     attempt: int,
     opener=urllib.request.urlopen,  # noqa: ANN001
+    timeout_seconds: float | None = None,
 ) -> TranscriptionResult:
     source = config.get("provider") or "openai-compatible"
     label = _asr_label(source)
@@ -314,10 +390,13 @@ def _transcribe_openai_compatible_once(
         },
     )
     try:
-        with opener(request, timeout=_asr_timeout_seconds()) as response:
-            response_data = response.read()
+        with opener(
+            request,
+            timeout=timeout_seconds or _asr_timeout_seconds(),
+        ) as response:
+            response_data = response.read(MAX_ASR_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as exc:
-        _discard_http_error_body(exc)
+        _close_http_error(exc)
         return TranscriptionResult(
             success=False,
             message=f"{label} transcription failed on attempt {attempt}: HTTP {exc.code}",
@@ -330,13 +409,20 @@ def _transcribe_openai_compatible_once(
             source=source,
         )
 
+    if len(response_data) > MAX_ASR_RESPONSE_BYTES:
+        return TranscriptionResult(success=False, message=f"{label} response was too large", source=source)
     try:
         payload = json.loads(response_data.decode("utf-8"))
-    except json.JSONDecodeError:
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return TranscriptionResult(success=False, message=f"{label} returned unreadable JSON", source=source)
-    text = str(payload.get("text") or "").strip()
-    if not text:
+    if not isinstance(payload, dict):
+        return TranscriptionResult(success=False, message=f"{label} returned invalid JSON", source=source)
+    raw_text = payload.get("text")
+    if not isinstance(raw_text, str) or not raw_text.strip():
         return TranscriptionResult(success=False, message=f"{label} returned no transcript", source=source)
+    text = raw_text.strip()
+    if len(text) > MAX_TRANSCRIPT_CHARACTERS:
+        return TranscriptionResult(success=False, message=f"{label} transcript was too large", source=source)
     return TranscriptionResult(
         text=text,
         success=True,
@@ -353,10 +439,10 @@ def _asr_label(provider: str) -> str:
     return "Groq" if provider == "groq" else "OpenAI-compatible"
 
 
-def _discard_http_error_body(exc: urllib.error.HTTPError) -> None:
+def _close_http_error(exc: urllib.error.HTTPError) -> None:
     try:
-        exc.read()
-    except OSError:
+        exc.close()
+    except Exception:
         pass
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -67,8 +68,26 @@ class VibeStickState:
     def to_jsonable(self) -> dict[str, Any]:
         data = asdict(self)
         data["battery"] = None
+        data["active_provider"] = _bounded_utf8(self.active_provider, 15)
+        data["provider"]["id"] = _bounded_utf8(self.provider.id, 15)
+        data["provider"]["display_name"] = _bounded_utf8(
+            self.provider.display_name,
+            32,
+        )
+        data["provider"]["project"] = _bounded_utf8(self.provider.project, 36)
+        data["provider"]["quota_updated_at"] = _bounded_utf8(
+            self.provider.quota_updated_at,
+            7,
+        )
         data["provider"]["status"] = self.provider.status.value
+        data["codex"]["project"] = _bounded_utf8(self.codex.project, 36)
+        data["codex"]["quota_updated_at"] = _bounded_utf8(
+            self.codex.quota_updated_at,
+            7,
+        )
         data["codex"]["status"] = self.codex.status.value
+        data["alert"]["event_id"] = _bounded_identifier(self.alert.event_id, 55)
+        data["alert"]["message"] = _bounded_utf8(self.alert.message, 72)
         data["alert"]["type"] = self.alert.type.value
         return data
 
@@ -78,10 +97,12 @@ def now_time_text() -> str:
 
 
 def event_id(prefix: str) -> str:
-    return f"evt_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{prefix}"
+    return f"evt_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{prefix}"
 
 
-def state_from_dict(data: dict[str, Any]) -> VibeStickState:
+def state_from_dict(data: object) -> VibeStickState:
+    if not isinstance(data, dict):
+        return default_state()
     provider_data = data.get("provider", {})
     codex_data = data.get("codex", {})
     codex_data = codex_data if isinstance(codex_data, dict) else {}
@@ -96,16 +117,16 @@ def state_from_dict(data: dict[str, Any]) -> VibeStickState:
         active_provider=str(data.get("active_provider") or provider_state.id),
         provider=provider_state,
         codex=CodexState(
-            status=AgentStatus(codex_data.get("status", AgentStatus.IDLE.value)),
+            status=_agent_status(codex_data.get("status")),
             project=str(codex_data.get("project") or "vibestick"),
-            quota_5h_remaining=codex_data.get("quota_5h_remaining"),
-            quota_7d_remaining=codex_data.get("quota_7d_remaining"),
+            quota_5h_remaining=_percent_or_none(codex_data.get("quota_5h_remaining")),
+            quota_7d_remaining=_percent_or_none(codex_data.get("quota_7d_remaining")),
             quota_updated_at=str(codex_data.get("quota_updated_at") or ""),
             quota_stale=bool(codex_data.get("quota_stale", False)),
         ),
         alert=AlertState(
             event_id=str(alert_data.get("event_id") or ""),
-            type=AlertType(alert_data.get("type", AlertType.NONE.value)),
+            type=_alert_type(alert_data.get("type")),
             message=str(alert_data.get("message") or ""),
         ),
     )
@@ -117,10 +138,10 @@ def _provider_state_from_dict(provider_data: dict[str, Any], codex_data: dict[st
             id=str(provider_data.get("id") or "codex"),
             display_name=str(provider_data.get("display_name") or "Codex"),
             implemented=bool(provider_data.get("implemented", True)),
-            status=AgentStatus(provider_data.get("status", AgentStatus.IDLE.value)),
+            status=_agent_status(provider_data.get("status")),
             project=str(provider_data.get("project") or "vibestick"),
-            quota_5h_remaining=provider_data.get("quota_5h_remaining"),
-            quota_7d_remaining=provider_data.get("quota_7d_remaining"),
+            quota_5h_remaining=_percent_or_none(provider_data.get("quota_5h_remaining")),
+            quota_7d_remaining=_percent_or_none(provider_data.get("quota_7d_remaining")),
             quota_updated_at=str(provider_data.get("quota_updated_at") or ""),
             quota_stale=bool(provider_data.get("quota_stale", False)),
         )
@@ -129,13 +150,55 @@ def _provider_state_from_dict(provider_data: dict[str, Any], codex_data: dict[st
         id="codex",
         display_name="Codex",
         implemented=True,
-        status=AgentStatus(codex_data.get("status", AgentStatus.IDLE.value)),
+        status=_agent_status(codex_data.get("status")),
         project=str(codex_data.get("project") or "vibestick"),
-        quota_5h_remaining=codex_data.get("quota_5h_remaining"),
-        quota_7d_remaining=codex_data.get("quota_7d_remaining"),
+        quota_5h_remaining=_percent_or_none(codex_data.get("quota_5h_remaining")),
+        quota_7d_remaining=_percent_or_none(codex_data.get("quota_7d_remaining")),
         quota_updated_at=str(codex_data.get("quota_updated_at") or ""),
         quota_stale=bool(codex_data.get("quota_stale", False)),
     )
+
+
+def _agent_status(value: object) -> AgentStatus:
+    if value is None:
+        return AgentStatus.IDLE
+    try:
+        return AgentStatus(value)
+    except (TypeError, ValueError):
+        return AgentStatus.UNKNOWN
+
+
+def _alert_type(value: object) -> AlertType:
+    try:
+        return AlertType(value)
+    except (TypeError, ValueError):
+        return AlertType.NONE
+
+
+def _percent_or_none(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return max(0, min(100, number))
+
+
+def _bounded_utf8(value: object, max_bytes: int) -> str:
+    encoded = str(value or "").encode("utf-8", errors="replace")
+    if len(encoded) <= max_bytes:
+        return encoded.decode("utf-8")
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def _bounded_identifier(value: object, max_bytes: int) -> str:
+    text = str(value or "")
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= max_bytes:
+        return encoded.decode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    return _bounded_utf8(f"evt_{digest}", max_bytes)
 
 
 def default_state() -> VibeStickState:

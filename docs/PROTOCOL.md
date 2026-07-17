@@ -1,6 +1,6 @@
 # Protocol
 
-VibeStick v0.1.2 uses HTTP over Wi-Fi between the StickS3 firmware and the local Mac bridge.
+VibeStick v0.1.5 uses HTTP over Wi-Fi between the StickS3 firmware and the local Mac bridge.
 
 Default bridge URL:
 
@@ -14,7 +14,7 @@ Firmware requests include:
 
 ```text
 X-Vibe-Stick-Firmware-Name: vibestick
-X-Vibe-Stick-Firmware-Version: 0.1.2
+X-Vibe-Stick-Firmware-Version: 0.1.5
 X-Vibe-Stick-Firmware-Transport: HTTP
 X-Vibe-Stick-Firmware-Build-Date: <compile date>
 ```
@@ -27,13 +27,15 @@ X-Vibe-Stick-Channels: 1
 X-Vibe-Stick-Bits-Per-Sample: 16
 ```
 
-When `VIBE_STICK_BRIDGE_TOKEN` is configured on the bridge and firmware, protected POST requests also include:
+When `VIBE_STICK_BRIDGE_TOKEN` is configured on the bridge and firmware, protected requests also include:
 
 ```text
 X-Vibe-Stick-Token: <shared-token>
 ```
 
-Protected endpoints are `/event`, `/quota/refresh`, `/recording/start`, `/recording/audio`, and `/recording/stop`. If the bridge binds outside loopback, such as `0.0.0.0`, `VIBE_STICK_BRIDGE_TOKEN` is required and placeholder tokens are rejected. If the bridge binds to loopback only, missing tokens are allowed for local development.
+Protected endpoints are `GET /state`, `/event`, `/quota/refresh`, `/recording/start`, `/recording/audio`, and `/recording/stop`. If the bridge binds outside loopback, such as `0.0.0.0`, `VIBE_STICK_BRIDGE_TOKEN` is required and placeholder tokens are rejected. If the bridge binds to loopback only, missing tokens are allowed for local development. `GET /health` remains public for installation and diagnostics.
+
+This transport is plain HTTP. The token is sent over the LAN and therefore does not protect against passive capture or replay. Run the bridge only on a private, trusted network, keep port `8765` behind the macOS firewall, and never forward it to the internet. A future authenticated-encryption or nonce/HMAC transport is needed before treating hostile networks as supported.
 
 ## GET /state
 
@@ -71,7 +73,7 @@ Returns the current bridge state:
     "message": ""
   },
   "bridge_name": "vibestick-bridge",
-  "bridge_version": "0.1.2"
+  "bridge_version": "0.1.5"
 }
 ```
 
@@ -87,7 +89,7 @@ Returns bridge health metadata:
 {
   "ok": true,
   "bridge_name": "vibestick-bridge",
-  "bridge_version": "0.1.2"
+  "bridge_version": "0.1.5"
 }
 ```
 
@@ -163,7 +165,7 @@ The bridge rejects audio uploads larger than `VIBE_STICK_MAX_RECORDING_AUDIO_BYT
 Stops the session and runs transcription:
 
 ```json
-{"event":"button_long_stop","source":"sticks3","paste":true}
+{"event":"button_long_stop","source":"sticks3","paste":true,"session_id":"<firmware-generated-id>"}
 ```
 
 When transcription succeeds, the bridge pastes the transcript into the focused macOS app. Recording status does not trigger agent alert sounds.

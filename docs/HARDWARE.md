@@ -2,7 +2,7 @@
 
 ## Supported Device
 
-VibeStick v0.1.2 targets M5Stack StickS3.
+VibeStick v0.1.5 targets M5Stack StickS3.
 
 The project does not currently claim support for other devices because the UI layout, front button behavior, microphone path, speaker path, PMIC battery reads, and screen size are all written around StickS3.
 
@@ -75,3 +75,5 @@ If automatic flashing fails, put the StickS3 into download mode and retry:
 ## Runtime Network
 
 The StickS3 talks to the Mac bridge by HTTP. The Mac bridge should listen on `0.0.0.0:8765` when the device is on the same Wi-Fi network.
+
+Use only a private, trusted LAN. HTTP does not encrypt the shared Bridge token sent with protected requests; do not expose port `8765` to the internet. The firmware image also contains the configured Wi-Fi password and Bridge token. If a device is lost, rotate both credentials as appropriate, then reflash it.

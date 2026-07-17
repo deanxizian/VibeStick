@@ -1,4 +1,5 @@
 import os
+import threading
 import unittest
 from collections import deque
 from datetime import datetime, timezone
@@ -104,9 +105,60 @@ class ServerProviderTests(unittest.TestCase):
             store._apply_alerts_from_observations(codex, codex)
         self.assertEqual(store._state.alert.event_id, "evt_first")
 
-        with mock.patch.object(app.time, "monotonic", return_value=13.0):
+        with mock.patch.object(
+            app.time,
+            "monotonic",
+            return_value=10.0 + app.ALERT_PRESENTATION_SECONDS + 0.1,
+        ):
             store._apply_alerts_from_observations(codex, codex)
         self.assertEqual(store._state.alert.event_id, "evt_second")
+
+        with mock.patch.object(
+            app.time,
+            "monotonic",
+            return_value=10.0 + app.ALERT_PRESENTATION_SECONDS + 1.0,
+        ):
+            store._apply_alerts_from_observations(codex, codex)
+        self.assertEqual(store._state.alert.event_id, "evt_second")
+
+    def test_cross_provider_alert_does_not_fall_back_and_ring_twice(self) -> None:
+        store = app.BridgeStateStore.__new__(app.BridgeStateStore)
+        store._state = default_state()
+        store._alert_tracking_initialized = True
+        store._seen_alert_event_ids = set()
+        store._seen_alert_event_order = deque()
+        store._pending_alerts = deque()
+        store._published_alert_since = 0.0
+        first_at = datetime(2026, 7, 17, 10, 0, tzinfo=timezone.utc)
+        second_at = datetime(2026, 7, 17, 10, 1, tzinfo=timezone.utc)
+        codex = self._obs("codex", status=AgentStatus.DONE)
+        codex.alert_events = (
+            ProviderAlert("evt_codex", "DONE", "Codex done", first_at),
+        )
+        claude = self._obs("claude", status=AgentStatus.DONE)
+        claude.alert_events = (
+            ProviderAlert("evt_claude", "DONE", "Claude done", second_at),
+        )
+
+        with mock.patch.object(app.time, "monotonic", return_value=10.0):
+            store._apply_alerts_from_observations(codex, codex, claude)
+        self.assertEqual(store._state.alert.event_id, "evt_codex")
+
+        with mock.patch.object(
+            app.time,
+            "monotonic",
+            return_value=10.0 + app.ALERT_PRESENTATION_SECONDS + 0.1,
+        ):
+            store._apply_alerts_from_observations(codex, codex, claude)
+        self.assertEqual(store._state.alert.event_id, "evt_claude")
+
+        with mock.patch.object(
+            app.time,
+            "monotonic",
+            return_value=10.0 + 2 * app.ALERT_PRESENTATION_SECONDS + 0.2,
+        ):
+            store._apply_alerts_from_observations(codex, codex, claude)
+        self.assertEqual(store._state.alert.event_id, "evt_claude")
 
     def test_claude_usage_interval_has_minimum(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -159,6 +211,106 @@ class ServerProviderTests(unittest.TestCase):
 
         self.assertEqual(store._claude_quota, refreshed)
         save_quota.assert_called_once_with(app.CLAUDE_QUOTA_PATH, refreshed)
+
+    def test_periodic_claude_usage_refresh_runs_outside_state_request(self) -> None:
+        store = app.BridgeStateStore.__new__(app.BridgeStateStore)
+        store._lock = threading.RLock()
+        store._claude_quota = QuotaSnapshot()
+        store._claude_usage_last_attempt = 0.0
+        store._claude_usage_last_success = 0.0
+        store._claude_usage_thread = None
+        started = threading.Event()
+        release = threading.Event()
+
+        def fetch_usage():
+            started.set()
+            release.wait(timeout=2)
+            return None
+
+        with mock.patch.object(app, "fetch_claude_usage", side_effect=fetch_usage):
+            with mock.patch.object(app.time, "monotonic", return_value=400.0):
+                store._refresh_claude_usage_locked(force=False)
+                self.assertTrue(started.wait(timeout=1))
+                self.assertTrue(store._claude_usage_thread.is_alive())
+                release.set()
+                store._claude_usage_thread.join(timeout=2)
+
+        self.assertFalse(store._claude_usage_thread.is_alive())
+
+    def test_stale_background_usage_cannot_overwrite_forced_refresh(self) -> None:
+        store = app.BridgeStateStore.__new__(app.BridgeStateStore)
+        store._lock = threading.RLock()
+        store._claude_quota = QuotaSnapshot()
+        store._claude_usage_last_attempt = 0.0
+        store._claude_usage_last_success = 0.0
+        store._claude_usage_generation = 0
+        store._claude_usage_thread = None
+        background_started = threading.Event()
+        release_background = threading.Event()
+        old_usage = object()
+        fresh_usage = object()
+        old_quota = QuotaSnapshot(10, 20, "old", False)
+        fresh_quota = QuotaSnapshot(80, 90, "fresh", False)
+
+        def fetch_usage():
+            if not background_started.is_set():
+                background_started.set()
+                release_background.wait(timeout=2)
+                return old_usage
+            return fresh_usage
+
+        def to_quota(usage):
+            return old_quota if usage is old_usage else fresh_quota
+
+        with mock.patch.object(app, "fetch_claude_usage", side_effect=fetch_usage):
+            with mock.patch.object(app, "claude_usage_to_quota", side_effect=to_quota):
+                with mock.patch.object(app, "save_quota"):
+                    with mock.patch.object(app.time, "monotonic", return_value=400.0):
+                        with store._lock:
+                            store._refresh_claude_usage_locked(force=False)
+                        self.assertTrue(background_started.wait(timeout=1))
+                        with store._lock:
+                            store._refresh_claude_usage_locked(force=True)
+                        release_background.set()
+                        store._claude_usage_thread.join(timeout=2)
+
+        self.assertFalse(store._claude_usage_thread.is_alive())
+        self.assertEqual(store._claude_quota, fresh_quota)
+
+    def test_first_observation_baselines_alerts_without_restart_replay(self) -> None:
+        store = app.BridgeStateStore.__new__(app.BridgeStateStore)
+        store._state = default_state()
+        store._alert_tracking_initialized = False
+        store._seen_alert_event_ids = set()
+        store._seen_alert_event_order = deque()
+        store._pending_alerts = deque()
+        store._published_alert_since = 0.0
+        codex = self._obs("codex", status=AgentStatus.DONE)
+        codex.alert_events = (
+            ProviderAlert("evt_before_restart", "DONE", "Already completed"),
+        )
+
+        with mock.patch.object(app.time, "monotonic", return_value=10.0):
+            store._apply_alerts_from_observations(codex, codex)
+
+        self.assertEqual(store._state.alert.type.value, "NONE")
+        self.assertIn("evt_before_restart", store._seen_alert_event_ids)
+
+    def test_manual_alert_replaces_real_history_during_override(self) -> None:
+        observation = self._obs("codex", status=AgentStatus.RUNNING)
+        observation.alert_events = (
+            ProviderAlert("evt_real", "DONE", "Real completion"),
+        )
+        state = default_state()
+        state.codex.status = AgentStatus.DONE
+        state.alert.event_id = "evt_manual"
+        state.alert.type = app.AlertType.DONE
+        state.alert.message = "Manual test"
+
+        app._apply_manual_codex_state(observation, state)
+        events = app._collect_alert_events(observation, observation)
+
+        self.assertEqual([event.event_id for event in events], ["evt_manual"])
 
     def test_claude_quota_can_seed_from_saved_provider_state(self) -> None:
         state = default_state()

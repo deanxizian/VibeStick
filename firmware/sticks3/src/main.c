@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +45,8 @@
 #define LVGL_DRAW_BUF_LINES 24
 #define LVGL_TICK_PERIOD_MS 10
 #define BATTERY_FILL_MAX_WIDTH 20
+#define ALERT_SOUND_PENDING_CAPACITY 32
+#define HTTP_JSON_RESPONSE_CAPACITY 2048
 
 #define PIN_BUTTON_FRONT 11
 #define PIN_BUTTON_SIDE 12
@@ -120,17 +123,29 @@ typedef struct {
     char *data;
     int capacity;
     int used;
+    bool truncated;
 } http_response_capture_t;
+
+typedef struct {
+    char event_id[56];
+    char type[24];
+} pending_alert_sound_t;
 
 static QueueHandle_t s_event_queue;
 static SemaphoreHandle_t s_lvgl_lock;
 static bool s_wifi_connected;
 static bool s_recording_overlay_visible;
-static bool s_long_press_active;
+static atomic_bool s_long_press_active;
+static atomic_bool s_long_start_pending;
+static atomic_bool s_long_stop_pending;
 static char s_last_alert_event_id[56];
 static char s_last_alert_type[24];
 static bool s_alert_sound_baseline_ready;
+static pending_alert_sound_t s_pending_alert_sounds[ALERT_SOUND_PENDING_CAPACITY];
+static size_t s_pending_alert_sound_head;
+static size_t s_pending_alert_sound_count;
 static char s_recording_session_id[40];
+static bool s_recording_audio_uploaded;
 
 static lv_display_t *s_display;
 static lv_obj_t *s_wifi_label;
@@ -236,6 +251,7 @@ static const lv_point_precise_t s_battery_bolt_points[] = {
 };
 
 static void render_state(void);
+static void handle_recording_stop(void);
 
 static void queue_event(agent_event_type_t type)
 {
@@ -243,7 +259,9 @@ static void queue_event(agent_event_type_t type)
         return;
     }
     agent_event_t event = {.type = type};
-    (void)xQueueSend(s_event_queue, &event, 0);
+    if (xQueueSend(s_event_queue, &event, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "event queue full; dropped type=%d", (int)type);
+    }
 }
 
 static const agent_provider_config_t *provider_config(agent_provider_t provider)
@@ -481,7 +499,8 @@ static esp_err_t init_display(void)
     ESP_RETURN_ON_ERROR(esp_timer_create(&tick_args, &tick_timer), TAG, "tick timer");
     ESP_RETURN_ON_ERROR(esp_timer_start_periodic(tick_timer, LVGL_TICK_PERIOD_MS * 1000), TAG, "tick start");
 
-    xTaskCreate(lvgl_task, "lvgl", 4096, NULL, 3, NULL);
+    BaseType_t task_created = xTaskCreate(lvgl_task, "lvgl", 4096, NULL, 3, NULL);
+    ESP_RETURN_ON_FALSE(task_created == pdPASS, ESP_ERR_NO_MEM, TAG, "lvgl task");
     return ESP_OK;
 }
 
@@ -727,7 +746,7 @@ static void create_ui(void)
     s_recording_title = make_label(s_recording_overlay, "正在聆听", FONT_CN,
                                    lv_color_hex(0xf4f5f7), 120, LV_TEXT_ALIGN_CENTER);
     lv_obj_align(s_recording_title, LV_ALIGN_CENTER, 0, 22);
-    s_recording_hint = make_label(s_recording_overlay, "松开发送", FONT_CN,
+    s_recording_hint = make_label(s_recording_overlay, "松开识别", FONT_CN,
                                   lv_color_hex(0x8b9098), 120, LV_TEXT_ALIGN_CENTER);
     lv_obj_align(s_recording_hint, LV_ALIGN_BOTTOM_MID, 0, -22);
 }
@@ -860,61 +879,133 @@ static bool sound_for_alert_type(const char *type, agent_sound_t *sound)
     return false;
 }
 
-static void remember_alert_sound_baseline(void)
+static void remember_alert_sound_baseline(const char *event_id, const char *type)
 {
-    strlcpy(s_last_alert_event_id, s_state.alert_event_id, sizeof(s_last_alert_event_id));
-    strlcpy(s_last_alert_type, s_state.alert_type, sizeof(s_last_alert_type));
+    strlcpy(s_last_alert_event_id, event_id, sizeof(s_last_alert_event_id));
+    strlcpy(s_last_alert_type, type, sizeof(s_last_alert_type));
     s_alert_sound_baseline_ready = true;
 }
 
-static bool should_play_alert_sound(void)
+static bool alert_sound_matches_baseline(const char *event_id, const char *type)
 {
-    agent_sound_t ignored;
-    const bool target = sound_for_alert_type(s_state.alert_type, &ignored);
-
     if (!s_alert_sound_baseline_ready) {
-        remember_alert_sound_baseline();
         return false;
     }
+    if (event_id[0] != '\0') {
+        return strcmp(s_last_alert_event_id, event_id) == 0;
+    }
+    return strcmp(s_last_alert_type, type) == 0;
+}
 
-    if (!target) {
-        remember_alert_sound_baseline();
+static bool pending_alert_sound_matches(const pending_alert_sound_t *pending,
+                                        const char *event_id, const char *type)
+{
+    if (event_id[0] != '\0') {
+        return strcmp(pending->event_id, event_id) == 0;
+    }
+    return pending->event_id[0] == '\0' && strcmp(pending->type, type) == 0;
+}
+
+static bool pending_alert_sound_contains(const char *event_id, const char *type)
+{
+    for (size_t i = 0; i < s_pending_alert_sound_count; ++i) {
+        size_t index = (s_pending_alert_sound_head + i) % ALERT_SOUND_PENDING_CAPACITY;
+        if (pending_alert_sound_matches(&s_pending_alert_sounds[index], event_id, type)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool queue_pending_alert_sound(const char *event_id, const char *type)
+{
+    if (alert_sound_matches_baseline(event_id, type) ||
+        pending_alert_sound_contains(event_id, type)) {
+        return true;
+    }
+    if (s_pending_alert_sound_count >= ALERT_SOUND_PENDING_CAPACITY) {
+        ESP_LOGW(TAG, "pending alert sound queue full event_id=%s type=%s", event_id, type);
         return false;
     }
+    size_t tail = (s_pending_alert_sound_head + s_pending_alert_sound_count) %
+                  ALERT_SOUND_PENDING_CAPACITY;
+    strlcpy(s_pending_alert_sounds[tail].event_id, event_id,
+            sizeof(s_pending_alert_sounds[tail].event_id));
+    strlcpy(s_pending_alert_sounds[tail].type, type,
+            sizeof(s_pending_alert_sounds[tail].type));
+    s_pending_alert_sound_count++;
+    ESP_LOGI(TAG, "deferred alert sound event_id=%s type=%s pending=%u",
+             event_id, type, (unsigned)s_pending_alert_sound_count);
+    return true;
+}
 
-    bool should_play = false;
-    if (s_state.alert_event_id[0] != '\0') {
-        should_play = strcmp(s_last_alert_event_id, s_state.alert_event_id) != 0;
-    } else {
-        should_play = strcmp(s_last_alert_type, s_state.alert_type) != 0;
+static void play_pending_alert_sounds(void)
+{
+    if (s_pending_alert_sound_count > 0 &&
+        !s_recording_overlay_visible && !vibe_audio_is_recording()) {
+        pending_alert_sound_t *pending = &s_pending_alert_sounds[s_pending_alert_sound_head];
+        agent_sound_t sound;
+        if (!sound_for_alert_type(pending->type, &sound)) {
+            ESP_LOGW(TAG, "discard invalid pending alert sound type=%s", pending->type);
+        } else {
+            esp_err_t err = vibe_audio_play_sound(sound);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "pending alert sound retained type=%s err=%s",
+                         pending->type, esp_err_to_name(err));
+                return;
+            }
+            remember_alert_sound_baseline(pending->event_id, pending->type);
+            ESP_LOGI(TAG, "played deferred alert event_id=%s type=%s",
+                     pending->event_id, pending->type);
+        }
+        s_pending_alert_sound_head =
+            (s_pending_alert_sound_head + 1) % ALERT_SOUND_PENDING_CAPACITY;
+        s_pending_alert_sound_count--;
     }
-    remember_alert_sound_baseline();
-    return should_play;
 }
 
 static void maybe_handle_alert(void)
 {
+    if (!s_recording_overlay_visible && !vibe_audio_is_recording()) {
+        play_pending_alert_sounds();
+    }
+
     agent_sound_t sound;
     if (!sound_for_alert_type(s_state.alert_type, &sound)) {
-        (void)should_play_alert_sound();
+        if (!s_alert_sound_baseline_ready) {
+            remember_alert_sound_baseline(s_state.alert_event_id, s_state.alert_type);
+        }
         return;
     }
-    if (!should_play_alert_sound()) {
+    if (!s_alert_sound_baseline_ready) {
+        remember_alert_sound_baseline(s_state.alert_event_id, s_state.alert_type);
+        return;
+    }
+    if (alert_sound_matches_baseline(s_state.alert_event_id, s_state.alert_type) ||
+        pending_alert_sound_contains(s_state.alert_event_id, s_state.alert_type)) {
         return;
     }
     if (s_recording_overlay_visible || vibe_audio_is_recording()) {
-        ESP_LOGI(TAG, "skip alert sound while recording overlay is active type=%s",
-                 s_state.alert_type);
+        (void)queue_pending_alert_sound(s_state.alert_event_id, s_state.alert_type);
         return;
     }
 
     esp_err_t err = vibe_audio_play_sound(sound);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "alert sound skipped type=%s err=%s",
+        ESP_LOGW(TAG, "alert sound retained for retry type=%s err=%s",
                  s_state.alert_type, esp_err_to_name(err));
+        (void)queue_pending_alert_sound(s_state.alert_event_id, s_state.alert_type);
+        return;
     }
+    remember_alert_sound_baseline(s_state.alert_event_id, s_state.alert_type);
     ESP_LOGI(TAG, "alert type=%s project=%s message=%s",
              s_state.alert_type, s_state.project, s_state.alert_message);
+}
+
+static void finish_recording_overlay(void)
+{
+    show_recording_overlay(NULL, NULL, false);
+    play_pending_alert_sounds();
 }
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
@@ -925,6 +1016,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 
     http_response_capture_t *capture = (http_response_capture_t *)evt->user_data;
     if (!capture->data || capture->capacity <= 0 || capture->used >= capture->capacity - 1) {
+        capture->truncated = true;
         return ESP_OK;
     }
 
@@ -933,6 +1025,33 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     memcpy(capture->data + capture->used, evt->data, copy_len);
     capture->used += copy_len;
     capture->data[capture->used] = '\0';
+    if (copy_len < evt->data_len) {
+        capture->truncated = true;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t validate_http_result(esp_err_t perform_err, int status_code,
+                                      const http_response_capture_t *capture,
+                                      const char *method, const char *path)
+{
+    if (perform_err != ESP_OK) {
+        ESP_LOGW(TAG, "http %s %s failed: %s", method, path, esp_err_to_name(perform_err));
+        return perform_err;
+    }
+    if (status_code < 200 || status_code >= 300) {
+        ESP_LOGW(TAG, "http %s %s rejected status=%d", method, path, status_code);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (capture->truncated) {
+        ESP_LOGW(TAG, "http %s %s response truncated at %d bytes",
+                 method, path, capture->used);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (capture->data && capture->capacity > 0 && capture->used == 0) {
+        ESP_LOGW(TAG, "http %s %s status=%d empty response", method, path, status_code);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
     return ESP_OK;
 }
 
@@ -945,6 +1064,7 @@ static esp_err_t http_request_timeout(const char *method, const char *path, cons
         .data = response,
         .capacity = response_len,
         .used = 0,
+        .truncated = false,
     };
     if (response && response_len > 0) {
         response[0] = '\0';
@@ -971,9 +1091,7 @@ static esp_err_t http_request_timeout(const char *method, const char *path, cons
     }
     esp_err_t err = esp_http_client_perform(client);
     int status_code = esp_http_client_get_status_code(client);
-    if (err == ESP_OK && response && response_len > 0 && capture.used == 0) {
-        ESP_LOGW(TAG, "http %s %s status=%d empty response", method, path, status_code);
-    }
+    err = validate_http_result(err, status_code, &capture, method, path);
     esp_http_client_cleanup(client);
     return err;
 }
@@ -993,6 +1111,7 @@ static esp_err_t http_post_binary(const char *path, const uint8_t *body, size_t 
         .data = response,
         .capacity = response_len,
         .used = 0,
+        .truncated = false,
     };
     if (response && response_len > 0) {
         response[0] = '\0';
@@ -1020,9 +1139,7 @@ static esp_err_t http_post_binary(const char *path, const uint8_t *body, size_t 
     esp_http_client_set_post_field(client, (const char *)body, body_len);
     esp_err_t err = esp_http_client_perform(client);
     int status_code = esp_http_client_get_status_code(client);
-    if (err == ESP_OK && response && response_len > 0 && capture.used == 0) {
-        ESP_LOGW(TAG, "http POST %s status=%d empty response", path, status_code);
-    }
+    err = validate_http_result(err, status_code, &capture, "POST", path);
     esp_http_client_cleanup(client);
     return err;
 }
@@ -1123,6 +1240,28 @@ static void parse_codex_json(cJSON *codex)
              display_state->quota_stale);
 }
 
+static bool json_has_nonempty_string(cJSON *object, const char *key)
+{
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
+    return cJSON_IsString(item) && item->valuestring && item->valuestring[0] != '\0';
+}
+
+static bool state_json_has_core_fields(cJSON *state_root)
+{
+    if (!cJSON_IsObject(state_root)) {
+        return false;
+    }
+    cJSON *provider = cJSON_GetObjectItemCaseSensitive(state_root, "provider");
+    cJSON *codex = cJSON_GetObjectItemCaseSensitive(state_root, "codex");
+    return cJSON_IsObject(provider) &&
+           json_has_nonempty_string(provider, "id") &&
+           json_has_nonempty_string(provider, "status") &&
+           json_has_nonempty_string(provider, "project") &&
+           cJSON_IsObject(codex) &&
+           json_has_nonempty_string(codex, "status") &&
+           json_has_nonempty_string(codex, "project");
+}
+
 static bool parse_state_json(const char *json)
 {
     cJSON *root = cJSON_Parse(json);
@@ -1133,6 +1272,11 @@ static bool parse_state_json(const char *json)
     cJSON *wrapped_state = cJSON_GetObjectItemCaseSensitive(root, "state");
     if (cJSON_IsObject(wrapped_state)) {
         state_root = wrapped_state;
+    }
+    if (!state_json_has_core_fields(state_root)) {
+        ESP_LOGW(TAG, "state response missing required provider/codex fields");
+        cJSON_Delete(root);
+        return false;
     }
 
     copy_json_string(state_root, "time", s_state.time, sizeof(s_state.time));
@@ -1168,7 +1312,7 @@ static bool parse_state_json(const char *json)
 
 static void poll_state(void)
 {
-    char response[1536] = {0};
+    char response[HTTP_JSON_RESPONSE_CAPACITY] = {0};
     int battery_level = 0;
     if (vibe_board_battery_level(&battery_level) == ESP_OK) {
         s_state.battery = battery_level;
@@ -1213,11 +1357,12 @@ static void post_simple_event(const char *event_name, const char *path)
 {
     char body[96];
     snprintf(body, sizeof(body), "{\"event\":\"%s\",\"source\":\"sticks3\"}", event_name);
-    char response[512] = {0};
+    char response[HTTP_JSON_RESPONSE_CAPACITY] = {0};
     const char *target_path = path ? path : VIBE_STICK_EVENT_PATH;
     esp_err_t err = http_request("POST", target_path, body, response, sizeof(response));
     if (err == ESP_OK && response[0] != '\0' && parse_state_json(response)) {
         render_state();
+        maybe_handle_alert();
     }
 }
 
@@ -1249,6 +1394,24 @@ static bool is_recording_failure_status(const char *status)
            strcmp(status, "stop_failed") == 0;
 }
 
+static bool is_recording_success_status(const char *status)
+{
+    return strcmp(status, "pasted") == 0 ||
+           strcmp(status, "transcribed") == 0;
+}
+
+static bool is_recording_terminal_status(const char *status)
+{
+    return is_recording_success_status(status) ||
+           is_recording_failure_status(status);
+}
+
+static bool is_recording_known_status(const char *status)
+{
+    return strcmp(status, "recording") == 0 ||
+           is_recording_terminal_status(status);
+}
+
 static bool parse_recording_status(const char *json, char *status_text, size_t status_text_len)
 {
     if (status_text_len > 0) {
@@ -1262,7 +1425,7 @@ static bool parse_recording_status(const char *json, char *status_text, size_t s
     cJSON *status = cJSON_IsObject(recording) ?
         cJSON_GetObjectItemCaseSensitive(recording, "status") : NULL;
     bool ok = false;
-    if (cJSON_IsString(status) && status->valuestring) {
+    if (cJSON_IsString(status) && status->valuestring && status->valuestring[0] != '\0') {
         strlcpy(status_text, status->valuestring, status_text_len);
         ok = true;
     }
@@ -1286,31 +1449,73 @@ static void generate_recording_session_id(char *session_id, size_t session_id_le
     session_id[32] = '\0';
 }
 
-static void upload_recording_audio(void)
+static esp_err_t upload_recording_audio(bool *terminal_rejection)
 {
+    if (terminal_rejection) {
+        *terminal_rejection = false;
+    }
     size_t audio_len = 0;
     const uint8_t *audio = vibe_audio_data(&audio_len);
     if (!audio || audio_len == 0 || s_recording_session_id[0] == '\0') {
         ESP_LOGW(TAG, "skip audio upload audio=%p len=%u session=%s",
                  audio, (unsigned)audio_len, s_recording_session_id);
-        return;
+        return ESP_ERR_INVALID_STATE;
     }
     char path[96];
     snprintf(path, sizeof(path), "%s?session_id=%s", VIBE_STICK_RECORDING_AUDIO_PATH, s_recording_session_id);
-    char response[768] = {0};
+    char response[HTTP_JSON_RESPONSE_CAPACITY] = {0};
     esp_err_t err = http_post_binary(path, audio, audio_len, response, sizeof(response));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "audio upload failed: %s", esp_err_to_name(err));
-        return;
+        return err;
     }
-    if (response[0] != '\0' && parse_state_json(response)) {
+    char recording_status[32] = {0};
+    if (!parse_recording_status(response, recording_status, sizeof(recording_status))) {
+        ESP_LOGW(TAG, "audio upload returned no recording status");
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    char response_session_id[40] = {0};
+    if (!parse_recording_session_id(response, response_session_id,
+                                    sizeof(response_session_id)) ||
+        strcmp(response_session_id, s_recording_session_id) != 0) {
+        ESP_LOGW(TAG, "audio upload returned a different recording session id");
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (!is_recording_known_status(recording_status)) {
+        ESP_LOGW(TAG, "audio upload returned unknown status=%s", recording_status);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (is_recording_failure_status(recording_status)) {
+        ESP_LOGW(TAG, "audio upload reached terminal status=%s", recording_status);
+        if (terminal_rejection) {
+            *terminal_rejection = true;
+        }
+        return ESP_FAIL;
+    }
+    if (parse_state_json(response)) {
         render_state();
+        maybe_handle_alert();
     }
+    return ESP_OK;
 }
 
 static void handle_recording_start(void)
 {
+    if (s_recording_session_id[0] != '\0') {
+        /*
+         * A previous upload or stop request failed after capture completed.
+         * Preserve that session and make the next long press a reachable retry
+         * instead of allowing vibe_audio_start() to clear its PCM buffer.
+         */
+        ESP_LOGI(TAG, "retry retained recording session=%s uploaded=%d",
+                 s_recording_session_id, s_recording_audio_uploaded);
+        atomic_store(&s_long_press_active, false);
+        handle_recording_stop();
+        return;
+    }
+
     generate_recording_session_id(s_recording_session_id, sizeof(s_recording_session_id));
+    s_recording_audio_uploaded = false;
     if (s_recording_session_id[0] == '\0') {
         ESP_LOGW(TAG, "recording start failed: no session id");
         return;
@@ -1320,26 +1525,54 @@ static void handle_recording_start(void)
     if (audio_err != ESP_OK) {
         ESP_LOGW(TAG, "hardware recording start failed: %s", esp_err_to_name(audio_err));
         s_recording_session_id[0] = '\0';
+        s_recording_audio_uploaded = false;
         return;
     }
-    show_recording_overlay("正在聆听", "松开发送", true);
+    show_recording_overlay("正在聆听", "松开识别", true);
 
     char body[192];
     snprintf(body, sizeof(body),
              "{\"event\":\"button_long_start\",\"source\":\"sticks3\","
              "\"audio_source\":\"sticks3_pcm\",\"session_id\":\"%s\"}",
              s_recording_session_id);
-    char response[1024] = {0};
+    char response[HTTP_JSON_RESPONSE_CAPACITY] = {0};
     esp_err_t err = http_request("POST", VIBE_STICK_RECORDING_START_PATH, body, response, sizeof(response));
     if (err == ESP_OK && response[0] != '\0') {
         char response_session_id[40] = {0};
-        parse_recording_session_id(response, response_session_id, sizeof(response_session_id));
-        if (response_session_id[0] != '\0' &&
-            strcmp(response_session_id, s_recording_session_id) != 0) {
-            ESP_LOGW(TAG, "bridge returned a different recording session id");
+        char recording_status[32] = {0};
+        bool has_session_id = parse_recording_session_id(
+            response, response_session_id, sizeof(response_session_id));
+        bool has_status = parse_recording_status(
+            response, recording_status, sizeof(recording_status));
+        bool same_session = has_session_id &&
+            strcmp(response_session_id, s_recording_session_id) == 0;
+        if (same_session && has_status && is_recording_terminal_status(recording_status)) {
+            ESP_LOGW(TAG, "bridge rejected recording start status=%s",
+                     recording_status);
+            esp_err_t stop_err = vibe_audio_stop();
+            if (stop_err == ESP_OK) {
+                vibe_audio_clear();
+            } else {
+                ESP_LOGW(TAG, "hardware stop after rejected start failed: %s",
+                         esp_err_to_name(stop_err));
+            }
+            s_recording_session_id[0] = '\0';
+            s_recording_audio_uploaded = false;
+            show_recording_overlay("录音失败", "", true);
+            vTaskDelay(pdMS_TO_TICKS(900));
+            poll_state();
+            finish_recording_overlay();
+            return;
+        }
+        if (!same_session || !has_status || strcmp(recording_status, "recording") != 0) {
+            /* Keep capturing. The audio upload can reconstruct the session
+             * when an otherwise successful response was malformed in transit. */
+            ESP_LOGW(TAG, "recording start response incomplete session=%s status=%s",
+                     response_session_id, recording_status);
         }
         if (parse_state_json(response)) {
             render_state();
+            maybe_handle_alert();
         }
     } else {
         ESP_LOGW(TAG, "recording start bridge request failed: %s", esp_err_to_name(err));
@@ -1351,36 +1584,86 @@ static void handle_recording_stop(void)
 {
     show_recording_overlay("正在发送", "", true);
     if (s_recording_session_id[0] == '\0') {
-        (void)vibe_audio_stop();
-        vibe_audio_clear();
+        esp_err_t stop_err = vibe_audio_stop();
+        if (stop_err == ESP_OK) {
+            vibe_audio_clear();
+        } else {
+            ESP_LOGW(TAG, "hardware recording stop without session failed: %s",
+                     esp_err_to_name(stop_err));
+        }
+        s_recording_audio_uploaded = false;
         poll_state();
-        show_recording_overlay(NULL, NULL, false);
+        finish_recording_overlay();
         return;
     }
 
     esp_err_t audio_err = vibe_audio_stop();
     if (audio_err != ESP_OK) {
         ESP_LOGW(TAG, "hardware recording stop failed: %s", esp_err_to_name(audio_err));
+        show_recording_overlay("录音失败", "", true);
+        vTaskDelay(pdMS_TO_TICKS(900));
+        poll_state();
+        finish_recording_overlay();
+        return;
     }
 
-    upload_recording_audio();
-    vibe_audio_clear();
+    if (!s_recording_audio_uploaded) {
+        bool terminal_rejection = false;
+        esp_err_t upload_err = upload_recording_audio(&terminal_rejection);
+        if (upload_err != ESP_OK) {
+            if (terminal_rejection) {
+                ESP_LOGW(TAG, "discarding recording rejected by terminal bridge session");
+                vibe_audio_clear();
+                s_recording_session_id[0] = '\0';
+                s_recording_audio_uploaded = false;
+                show_recording_overlay("识别失败", "", true);
+                vTaskDelay(pdMS_TO_TICKS(900));
+                poll_state();
+                finish_recording_overlay();
+                return;
+            }
+            ESP_LOGW(TAG, "recording audio retained for retry: %s", esp_err_to_name(upload_err));
+            show_recording_overlay("发送失败", "", true);
+            vTaskDelay(pdMS_TO_TICKS(900));
+            poll_state();
+            finish_recording_overlay();
+            return;
+        }
+        s_recording_audio_uploaded = true;
+        vibe_audio_clear();
+    }
 
     show_recording_overlay("正在识别", "", true);
-    const char *body = "{\"event\":\"button_long_stop\",\"source\":\"sticks3\",\"paste\":true}";
-    char response[1024] = {0};
+    char body[192];
+    snprintf(body, sizeof(body),
+             "{\"event\":\"button_long_stop\",\"source\":\"sticks3\","
+             "\"paste\":true,\"session_id\":\"%s\"}",
+             s_recording_session_id);
+    char response[3072] = {0};
     esp_err_t err = http_request_timeout("POST", VIBE_STICK_RECORDING_STOP_PATH, body, response, sizeof(response), 30000);
     bool recording_failed = false;
+    bool stop_response_valid = false;
     char recording_status[32] = {0};
-    if (err == ESP_OK && response[0] != '\0') {
-        if (parse_recording_status(response, recording_status, sizeof(recording_status))) {
+    if (err == ESP_OK) {
+        stop_response_valid = parse_recording_status(response, recording_status,
+                                                     sizeof(recording_status));
+        char response_session_id[40] = {0};
+        stop_response_valid = stop_response_valid &&
+            parse_recording_session_id(response, response_session_id,
+                                       sizeof(response_session_id)) &&
+            strcmp(response_session_id, s_recording_session_id) == 0 &&
+            is_recording_terminal_status(recording_status);
+        if (stop_response_valid) {
             recording_failed = is_recording_failure_status(recording_status);
             if (recording_failed) {
                 ESP_LOGW(TAG, "recording failed status=%s", recording_status);
             }
+        } else {
+            err = ESP_ERR_INVALID_RESPONSE;
         }
         if (parse_state_json(response)) {
             render_state();
+            maybe_handle_alert();
         }
     }
     if (err != ESP_OK || recording_failed) {
@@ -1391,9 +1674,15 @@ static void handle_recording_stop(void)
         show_recording_overlay(title, "", true);
         vTaskDelay(pdMS_TO_TICKS(900));
     }
-    s_recording_session_id[0] = '\0';
+    if (err == ESP_OK && stop_response_valid) {
+        s_recording_session_id[0] = '\0';
+        s_recording_audio_uploaded = false;
+    } else {
+        ESP_LOGW(TAG, "recording session retained for stop retry session=%s",
+                 s_recording_session_id);
+    }
     poll_state();
-    show_recording_overlay(NULL, NULL, false);
+    finish_recording_overlay();
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -1462,7 +1751,8 @@ static void button_long_start_cb(void *button_handle, void *usr_data)
 {
     (void)button_handle;
     (void)usr_data;
-    s_long_press_active = true;
+    atomic_store(&s_long_press_active, true);
+    atomic_store(&s_long_start_pending, true);
     queue_event(VIBE_STICK_EVENT_LONG_START);
 }
 
@@ -1470,8 +1760,8 @@ static void button_up_cb(void *button_handle, void *usr_data)
 {
     (void)button_handle;
     (void)usr_data;
-    if (s_long_press_active) {
-        s_long_press_active = false;
+    if (atomic_exchange(&s_long_press_active, false)) {
+        atomic_store(&s_long_stop_pending, true);
         queue_event(VIBE_STICK_EVENT_LONG_STOP);
     }
 }
@@ -1513,12 +1803,39 @@ static esp_err_t init_button(void)
     return ESP_OK;
 }
 
+static bool process_pending_long_start(void)
+{
+    if (!atomic_exchange(&s_long_start_pending, false)) {
+        return false;
+    }
+    if (atomic_exchange(&s_long_stop_pending, false)) {
+        atomic_store(&s_long_press_active, false);
+        if (vibe_audio_is_recording() || s_recording_session_id[0] != '\0') {
+            /* Preserve a stop already owed by an active or retained session. */
+            handle_recording_stop();
+            return true;
+        }
+        /* The whole press/release happened while the app task was busy. */
+        ESP_LOGW(TAG, "discard stale long press completed before recording could start");
+        return true;
+    }
+    handle_recording_start();
+    return true;
+}
+
 static void app_task(void *arg)
 {
     (void)arg;
     agent_event_t event;
     int64_t last_poll = 0;
     while (true) {
+        if (process_pending_long_start()) {
+            continue;
+        }
+        if (atomic_exchange(&s_long_stop_pending, false)) {
+            handle_recording_stop();
+            continue;
+        }
         int64_t now_ms = esp_timer_get_time() / 1000;
         if (s_wifi_connected && now_ms - last_poll >= VIBE_STICK_STATE_POLL_MS) {
             last_poll = now_ms;
@@ -1539,10 +1856,12 @@ static void app_task(void *arg)
             poll_state();
             break;
         case VIBE_STICK_EVENT_LONG_START:
-            handle_recording_start();
+            (void)process_pending_long_start();
             break;
         case VIBE_STICK_EVENT_LONG_STOP:
-            handle_recording_stop();
+            if (atomic_exchange(&s_long_stop_pending, false)) {
+                handle_recording_stop();
+            }
             break;
         case VIBE_STICK_EVENT_PROVIDER_NEXT:
             switch_provider();
@@ -1565,7 +1884,9 @@ void app_main(void)
 
     ESP_ERROR_CHECK_WITHOUT_ABORT(vibe_board_init_power());
     s_event_queue = xQueueCreate(10, sizeof(agent_event_t));
+    ESP_ERROR_CHECK(s_event_queue ? ESP_OK : ESP_ERR_NO_MEM);
     s_lvgl_lock = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(s_lvgl_lock ? ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(init_display());
     lvgl_lock();
     create_ui();
@@ -1574,5 +1895,6 @@ void app_main(void)
     ESP_ERROR_CHECK(init_button());
     ESP_ERROR_CHECK(vibe_audio_init());
     ESP_ERROR_CHECK(init_wifi());
-    xTaskCreate(app_task, "agent_app", 6144, NULL, 4, NULL);
+    BaseType_t app_task_created = xTaskCreate(app_task, "agent_app", 10240, NULL, 4, NULL);
+    ESP_ERROR_CHECK(app_task_created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 }

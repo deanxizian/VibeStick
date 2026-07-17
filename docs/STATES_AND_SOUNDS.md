@@ -1,6 +1,6 @@
 # States And Sounds
 
-VibeStick v0.1.2 plays sounds only for key agent status changes on the home screen. Recording states do not play sounds.
+VibeStick v0.1.5 plays sounds only for key agent status changes on the home screen. Recording states do not play sounds.
 
 | State | Trigger | Sound |
 | --- | --- | --- |
@@ -32,7 +32,7 @@ Sound generation lives in `firmware/sticks3/src/vibe_audio.c`.
 
 The firmware generates 16 kHz mono 16-bit PCM in memory and plays it through the ES8311 / I2S speaker path. No WAV, MP3, TTS, or network service is used for agent alert sounds.
 
-Recording has priority. If recording is active, alert sounds are skipped instead of queued.
+Recording has priority. If recording is active, up to 32 alert sounds are queued and played after the recording overlay closes.
 
 Duplicate prevention lives in `firmware/sticks3/src/main.c`. A sound is played only once for a new `alert.event_id`; if no event id exists, the firmware falls back to status-edge detection.
 
@@ -45,7 +45,7 @@ guardians) are excluded. A newer turn in the same conversation clears that
 conversation's older stale alert.
 
 When several conversations complete between two device polls, the Bridge presents
-their unique alerts in order for at least 2.5 seconds each. The firmware's event-id
+their unique alerts in order for at least 6 seconds each. The firmware's event-id
 deduplication therefore plays one sound per completion instead of collapsing them
 into one. Codex quota display accepts the main `limit_id=codex` account bucket and
 ignores model-specific buckets, which may independently report 100% remaining.

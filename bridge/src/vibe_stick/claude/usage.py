@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import subprocess
 import time
@@ -219,7 +220,7 @@ def token_from_credentials_json(text: str, *, now_ms: int | None = None) -> str 
 
 
 def _remaining_percent(percent_used: float | None) -> int | None:
-    if percent_used is None:
+    if percent_used is None or not math.isfinite(percent_used):
         return None
     return max(0, min(100, int(round(100.0 - percent_used))))
 
@@ -228,9 +229,10 @@ def _number_or_none(value: object) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    return number if math.isfinite(number) else None
 
 
 def _parse_iso_datetime(value: object) -> datetime | None:
@@ -243,4 +245,3 @@ def _parse_iso_datetime(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
-

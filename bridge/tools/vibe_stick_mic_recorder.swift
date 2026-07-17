@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import Foundation
 
 final class VibeStickMicRecorder: NSObject, AVAudioRecorderDelegate {
@@ -7,13 +8,20 @@ final class VibeStickMicRecorder: NSObject, AVAudioRecorderDelegate {
     private var didStop = false
     private var intSource: DispatchSourceSignal?
     private var termSource: DispatchSourceSignal?
+    private var parentSource: DispatchSourceTimer?
+    private let expectedParentPID: pid_t
 
     init(outputPath: String) {
         self.outputURL = URL(fileURLWithPath: outputPath)
+        self.expectedParentPID = getppid()
         super.init()
     }
 
     func run() {
+        // The Bridge owns our stdout/stderr pipes. If it crashes, a diagnostic
+        // write must not terminate us before AVAudioRecorder finalizes the file.
+        signal(SIGPIPE, SIG_IGN)
+        installParentMonitor()
         AVCaptureDevice.requestAccess(for: .audio) { granted in
             DispatchQueue.main.async {
                 guard granted else {
@@ -24,6 +32,20 @@ final class VibeStickMicRecorder: NSObject, AVAudioRecorderDelegate {
             }
         }
         RunLoop.main.run()
+    }
+
+    private func installParentMonitor() {
+        let source = DispatchSource.makeTimerSource(queue: .main)
+        source.schedule(deadline: .now() + .milliseconds(500), repeating: .milliseconds(500))
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            if getppid() != self.expectedParentPID {
+                fputs("Bridge parent exited; stopping microphone recorder\n", stderr)
+                self.stopAndExit()
+            }
+        }
+        source.resume()
+        parentSource = source
     }
 
     private func startRecording() {
@@ -71,6 +93,7 @@ final class VibeStickMicRecorder: NSObject, AVAudioRecorderDelegate {
     private func stopAndExit() {
         guard !didStop else { return }
         didStop = true
+        parentSource?.cancel()
         recorder?.stop()
         print("stopped \(outputURL.path)")
         fflush(stdout)

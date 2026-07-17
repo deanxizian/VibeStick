@@ -1,3 +1,6 @@
+import json
+import os
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -148,6 +151,30 @@ class CodexProviderTests(unittest.TestCase):
         self.assertEqual(observation.alert_type, "DONE")
         self.assertIsNotNone(observation.alert_timestamp)
         self.assertTrue(observation.alert_event_id.startswith("evt_codex_"))
+
+    def test_aborted_turn_is_idle_without_completion_alert(self) -> None:
+        now = datetime.now(timezone.utc)
+        observation = self._observe_events(
+            [
+                self._event(now - timedelta(seconds=2), "task_started", turn_id="turn-1"),
+                self._event(now - timedelta(seconds=1), "turn_aborted", turn_id="turn-1"),
+            ]
+        )
+
+        self.assertEqual(observation.status, AgentStatus.IDLE)
+        self.assertEqual(observation.alert_type, "")
+
+    def test_non_finite_rate_limit_is_ignored(self) -> None:
+        now = datetime.now(timezone.utc)
+        payload = {
+            "type": "token_count",
+            "rate_limits": {
+                "limit_id": "codex",
+                "primary": {"used_percent": float("inf"), "window_minutes": 300},
+            },
+        }
+
+        self.assertIsNone(local_observer._quota_from_payload(payload, now, now))
 
     def test_completion_alert_survives_while_another_conversation_runs(self) -> None:
         now = datetime.now(timezone.utc)
@@ -413,6 +440,165 @@ class CodexProviderTests(unittest.TestCase):
 
         self.assertEqual(observation.status, AgentStatus.RUNNING)
         self.assertEqual(observation.alert_type, "DONE")
+
+    def test_explicit_project_name_is_not_overridden_by_latest_conversation(self) -> None:
+        now = datetime.now(timezone.utc)
+        with patch.dict(
+            local_observer.os.environ,
+            {"VIBE_STICK_PROJECT_NAME": "Pinned Project"},
+        ):
+            observation = self._observe_sessions(
+                {
+                    "other-project": [
+                        {
+                            "timestamp": now.isoformat(),
+                            "type": "turn_context",
+                            "payload": {"cwd": "/tmp/OtherProject"},
+                        }
+                    ]
+                }
+            )
+
+        self.assertEqual(observation.project, "Pinned Project")
+
+    def test_subagents_do_not_consume_root_session_file_budget(self) -> None:
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            sessions_dir = Path(tmp)
+            root_paths: list[Path] = []
+            for index in range(2):
+                path = sessions_dir / f"root-{index}.jsonl"
+                path.write_text(
+                    json.dumps(
+                        self._session_meta(
+                            now,
+                            thread_source="user",
+                            source="vscode",
+                            session_id=f"root-{index}",
+                        )
+                    )
+                    + "\n"
+                )
+                os.utime(path, (1000 + index, 1000 + index))
+                root_paths.append(path)
+
+            for index in range(5):
+                path = sessions_dir / f"subagent-{index}.jsonl"
+                path.write_text(
+                    json.dumps(
+                        self._session_meta(
+                            now,
+                            thread_source="subagent",
+                            source={"subagent": {"other": "guardian"}},
+                            session_id=f"subagent-{index}",
+                        )
+                    )
+                    + "\n"
+                )
+                os.utime(path, (2000 + index, 2000 + index))
+
+            with (
+                patch.object(local_observer, "SESSIONS_DIR", sessions_dir),
+                patch.object(local_observer, "MAX_SESSION_FILES", 2),
+            ):
+                selected = local_observer._session_files()
+
+        self.assertEqual(set(selected), set(root_paths))
+
+    def test_root_classification_cache_invalidates_when_file_changes(self) -> None:
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            sessions_dir = Path(tmp)
+            root = sessions_dir / "root.jsonl"
+            subagent = sessions_dir / "subagent.jsonl"
+            root.write_text(
+                json.dumps(
+                    self._session_meta(
+                        now,
+                        thread_source="user",
+                        source="vscode",
+                        session_id="root",
+                    )
+                )
+                + "\n"
+            )
+            subagent.write_text(
+                json.dumps(
+                    self._session_meta(
+                        now,
+                        thread_source="subagent",
+                        source={"subagent": {"other": "guardian"}},
+                        session_id="subagent",
+                    )
+                )
+                + "\n"
+            )
+            local_observer._SESSION_CLASSIFICATION_CACHE.clear()
+
+            with (
+                patch.object(local_observer, "SESSIONS_DIR", sessions_dir),
+                patch.object(local_observer, "MAX_SESSION_FILES", 2),
+                patch.object(
+                    local_observer,
+                    "_first_json_event",
+                    wraps=local_observer._first_json_event,
+                ) as first_event,
+            ):
+                self.assertEqual(local_observer._session_files(), [root])
+                self.assertEqual(local_observer._session_files(), [root])
+                self.assertEqual(first_event.call_count, 2)
+
+                with root.open("a") as handle:
+                    handle.write(json.dumps(self._event(now, "task_started")) + "\n")
+                self.assertEqual(local_observer._session_files(), [root])
+
+            local_observer._SESSION_CLASSIFICATION_CACHE.clear()
+
+        self.assertEqual(first_event.call_count, 3)
+
+    def test_unchanged_real_session_uses_cached_summary(self) -> None:
+        now = datetime.now(timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "root.jsonl"
+            events = [
+                self._session_meta(
+                    now - timedelta(seconds=2),
+                    thread_source="user",
+                    source="vscode",
+                    session_id="root-cache",
+                ),
+                self._event(
+                    now - timedelta(seconds=1),
+                    "task_started",
+                    turn_id="turn-cache",
+                ),
+            ]
+            path.write_text("".join(json.dumps(event) + "\n" for event in events))
+            local_observer._SESSION_SUMMARY_CACHE.clear()
+
+            with (
+                patch.object(local_observer, "_codex_process_running", return_value=True),
+                patch.object(local_observer, "_session_files", return_value=[path]),
+                patch.object(
+                    local_observer,
+                    "_tail_json_events",
+                    wraps=local_observer._tail_json_events,
+                ) as tail,
+            ):
+                local_observer.observe_codex(Path(tmp))
+                local_observer.observe_codex(Path(tmp))
+                self.assertEqual(tail.call_count, 1)
+
+                events.append(
+                    self._event(now, "task_complete", turn_id="turn-cache")
+                )
+                path.write_text("".join(json.dumps(event) + "\n" for event in events))
+                observation = local_observer.observe_codex(Path(tmp))
+
+            local_observer._SESSION_SUMMARY_CACHE.clear()
+
+        self.assertEqual(tail.call_count, 2)
+        self.assertEqual(observation.status, AgentStatus.DONE)
 
     def test_newer_task_activity_clears_older_done_alert(self) -> None:
         now = datetime.now(timezone.utc)
