@@ -105,7 +105,7 @@ Aim for all required checks to pass. Then glance at the StickS3: Codex / Claude 
 
 If Codex works but the Claude column shows `--%`, that is expected: Claude usage is disabled by default (safer), so to display it set `VIBE_STICK_CLAUDE_USAGE=on` and make sure Claude Code is logged in via `claude` and `/login`.
 
-11. 👤 Open any text box, long-press the front blue button, speak, and release. VibeStick should transcribe and paste the text automatically.
+11. 👤 Open any text box, long-press the front blue button, speak, and release. VibeStick should transcribe and paste the text automatically. Single-click the blue button to press Return and send the draft. Double-click it to stop the current Codex turn; the task remains available to continue.
 
 For development without installing LaunchAgents, run `./scripts/dev.sh` from the repository root instead of `./scripts/install.sh`.
 
@@ -167,7 +167,7 @@ Empty values in `.env` generally mean "use the built-in default". `scripts/dev.s
 - `VIBE_STICK_BRIDGE_TOKEN`: shared token required whenever the bridge binds outside loopback, such as `0.0.0.0`.
 - `VIBE_STICK_MAX_RECORDING_AUDIO_BYTES`: max `/recording/audio` body size, default `2000000`.
 - `VIBE_STICK_RECORDING_USE_MAC_MIC`: set to `0` to disable Mac microphone fallback.
-- `VIBE_STICK_AUTO_ENTER`: set to `1` to press Return after pasting.
+- `VIBE_STICK_AUTO_ENTER`: set to `1` to press Return immediately after pasting. The default is `0`, which leaves the transcript as a draft so the blue-button single click can send it.
 
 ### ASR option 1: SiliconFlow (recommended default)
 

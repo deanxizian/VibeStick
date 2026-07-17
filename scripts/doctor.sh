@@ -46,6 +46,11 @@ env_value() {
   ' "$file"
 }
 
+python_bin() {
+  configured_python="$(env_value VIBE_STICK_PYTHON "$ENV_PATH")"
+  printf '%s\n' "${configured_python:-python3}"
+}
+
 secret_value() {
   key="$1"
   file="$2"
@@ -98,11 +103,12 @@ is_placeholder_host() {
 }
 
 check_python() {
-  if ! command -v python3 >/dev/null 2>&1; then
-    fail "Python 3 is not installed or not on PATH."
+  python_cmd="$(python_bin)"
+  if ! command -v "$python_cmd" >/dev/null 2>&1; then
+    fail "Configured Python is not installed or executable."
     return
   fi
-  if python3 - <<'PY' >/dev/null 2>&1
+  if "$python_cmd" - <<'PY' >/dev/null 2>&1
 import sys
 raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
 PY
@@ -204,7 +210,8 @@ check_bridge_health() {
 }
 
 check_asr() {
-  if python3 - "$ENV_PATH" "$APP_SUPPORT_DIR" <<'PY'
+  python_cmd="$(python_bin)"
+  if "$python_cmd" - "$ENV_PATH" "$APP_SUPPORT_DIR" <<'PY'
 import os
 import sys
 import tomllib
@@ -304,7 +311,8 @@ check_claude_token() {
   claude_usage="$(env_value VIBE_STICK_CLAUDE_USAGE "$ENV_PATH" | tr '[:upper:]' '[:lower:]')"
   case "$claude_usage" in
     1|true|yes|on)
-      if PYTHONPATH="$ROOT_DIR/bridge/src" python3 - "$ENV_PATH" <<'PY'
+      python_cmd="$(python_bin)"
+      if PYTHONPATH="$ROOT_DIR/bridge/src" "$python_cmd" - "$ENV_PATH" <<'PY'
 import os
 import sys
 from pathlib import Path

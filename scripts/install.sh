@@ -89,6 +89,12 @@ if [ -f "$ENV_PATH" ]; then
   set +a
 fi
 
+PYTHON_BIN="${VIBE_STICK_PYTHON:-python3}"
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+  printf '%s\n' "Python >= 3.11 is required; set VIBE_STICK_PYTHON in .env to a compatible interpreter." >&2
+  exit 1
+fi
+
 mkdir -p "$CONFIG_DIR"
 mkdir -p "$LAUNCH_AGENTS_DIR"
 rm -rf "$RUNTIME_DIR"
@@ -107,7 +113,7 @@ if [ -f "$CONFIG_DIR/.env" ]; then
   . "$CONFIG_DIR/.env"
   set +a
 fi
-PYTHONPATH="$RUNTIME_DIR/bridge/src" exec python3 -m vibe_stick --host 0.0.0.0 --port 8765
+PYTHONPATH="$RUNTIME_DIR/bridge/src" exec "\${VIBE_STICK_PYTHON:-python3}" -m vibe_stick --host 0.0.0.0 --port 8765
 RUNNER
 chmod +x "$RUNNER_PATH"
 

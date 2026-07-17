@@ -101,6 +101,12 @@ Examples:
 {"event":"button_short","source":"sticks3"}
 ```
 
+`button_short` injects Return into the focused macOS app. `button_double` activates the Codex desktop app and sends its stop-turn Escape sequence. Stopping interrupts only the current turn; the task history remains available for a follow-up.
+
+```json
+{"event":"button_double","source":"sticks3"}
+```
+
 ```json
 {"event":"test_agent_status","source":"manual_test","status":"DONE","message":"test done"}
 ```

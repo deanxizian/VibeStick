@@ -1535,7 +1535,7 @@ static void app_task(void *arg)
             post_simple_event("button_short", NULL);
             break;
         case VIBE_STICK_EVENT_DOUBLE_CLICK:
-            post_simple_event("button_double", VIBE_STICK_QUOTA_REFRESH_PATH);
+            post_simple_event("button_double", NULL);
             poll_state();
             break;
         case VIBE_STICK_EVENT_LONG_START:

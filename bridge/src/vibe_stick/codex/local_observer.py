@@ -212,12 +212,21 @@ def _codex_process_running() -> bool:
         return False
 
     for line in result.stdout.splitlines():
-        lower = line.lower()
-        if "/applications/codex.app/" in lower:
-            return True
-        if "codex app-server" in lower:
+        if _is_codex_process_command(line):
             return True
     return False
+
+
+def _is_codex_process_command(command: str) -> bool:
+    lower = command.lower()
+    if "/applications/codex.app/" in lower:
+        return True
+    if "codex app-server" in lower:
+        return True
+    return (
+        "/applications/chatgpt.app/contents/resources/codex" in lower
+        and " app-server" in lower
+    )
 
 
 def _project_name_from_env_or_root(project_root: Path) -> str:

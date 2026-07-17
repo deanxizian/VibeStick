@@ -20,6 +20,7 @@ from vibe_stick.claude.usage import to_quota_snapshot as claude_usage_to_quota
 from vibe_stick.codex.quota import QuotaSnapshot, load_quota, save_quota
 from vibe_stick.config.paths import CLAUDE_QUOTA_PATH, QUOTA_PATH, RECORDING_PATH, STATE_PATH, ensure_app_support
 from vibe_stick.desktop.hud import hide_hud
+from vibe_stick.paste.input_injector import MacPasteInjector, PasteResult
 from vibe_stick.protocol.state import (
     AlertState,
     AlertType,
@@ -68,6 +69,7 @@ class BridgeStateStore:
         self._state.codex.quota_updated_at = quota.quota_updated_at
         self._state.codex.quota_stale = quota.quota_stale
         self.recording = RecordingController(RECORDING_PATH)
+        self.input_injector = MacPasteInjector()
         hide_hud()
 
     def get_state(self) -> VibeStickState:
@@ -84,12 +86,20 @@ class BridgeStateStore:
             if requested_status:
                 self._set_codex_status(str(requested_status), str(event.get("message") or ""))
                 self._manual_status_until = time.monotonic() + MANUAL_STATUS_SECONDS
-            elif event_name == "button_double":
-                self.refresh_quota_locked()
             elif event_name == "button_short":
                 self._state.alert = AlertState(event_id="", type=AlertType.NONE, message="")
+                self._log_button_action("send", self.input_injector.press_enter())
+            elif event_name == "button_double":
+                self._log_button_action("pause", self.input_injector.pause_current_codex_task())
             self._save_state_locked()
             return self._state
+
+    @staticmethod
+    def _log_button_action(action: str, result: PasteResult) -> None:
+        print(
+            f"button action={action} success={str(result.success).lower()} message={result.message}",
+            flush=True,
+        )
 
     def refresh_quota(self) -> VibeStickState:
         with self._lock:

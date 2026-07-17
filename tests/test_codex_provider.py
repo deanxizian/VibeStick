@@ -1,6 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 
+from vibe_stick.codex import local_observer
 from vibe_stick.codex.local_observer import LocalCodexObservation
 from vibe_stick.codex.quota import QuotaSnapshot
 from vibe_stick.protocol.state import AgentStatus
@@ -8,6 +9,22 @@ from vibe_stick.providers.codex import observation_from_local_codex
 
 
 class CodexProviderTests(unittest.TestCase):
+    def test_chatgpt_bundled_codex_process_is_detected(self) -> None:
+        command = (
+            "/Applications/ChatGPT.app/Contents/Resources/codex "
+            "-c features.code_mode_host=true app-server --analytics-default-enabled"
+        )
+
+        self.assertTrue(local_observer._is_codex_process_command(command))
+
+    def test_chatgpt_codex_helper_without_app_server_is_ignored(self) -> None:
+        command = (
+            "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/"
+            "Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --type=renderer"
+        )
+
+        self.assertFalse(local_observer._is_codex_process_command(command))
+
     def test_codex_local_observation_maps_to_provider_observation(self) -> None:
         timestamp = datetime(2026, 6, 28, 9, 41, tzinfo=timezone.utc)
         observation = observation_from_local_codex(

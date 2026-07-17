@@ -9,7 +9,7 @@ The project does not currently claim support for other devices because the UI la
 ## Hardware Used
 
 - Screen: LVGL UI on the StickS3 display.
-- Blue front button: push-to-talk recording.
+- Blue front button: single click sends the focused draft, double click stops the current Codex turn, and long press records push-to-talk audio until release.
 - Side button: provider switching.
 - Microphone: StickS3 microphone captured as 16 kHz / 16-bit / mono PCM.
 - Speaker: ES8311 / I2S playback for generated agent status tones.

@@ -13,6 +13,30 @@ class PasteResult:
 
 
 class MacPasteInjector:
+    def press_enter(self) -> PasteResult:
+        return self._run_osascript(
+            ['tell application "System Events" to key code 36'],
+            success_message="Pressed Return in the focused app",
+        )
+
+    def pause_current_codex_task(self) -> PasteResult:
+        # Codex uses Escape to focus the composer (when needed), show the stop
+        # confirmation, and then interrupt the current turn. The final Escape
+        # is harmless when the composer was already focused and the turn has
+        # stopped after the second one.
+        return self._run_osascript(
+            [
+                'tell application id "com.openai.codex" to activate',
+                "delay 0.12",
+                'tell application "System Events" to key code 53',
+                "delay 0.16",
+                'tell application "System Events" to key code 53',
+                "delay 0.16",
+                'tell application "System Events" to key code 53',
+            ],
+            success_message="Sent the Codex stop shortcut",
+        )
+
     def paste(self, text: str, press_enter: bool = False) -> PasteResult:
         text = text.strip()
         if not text:
@@ -34,18 +58,28 @@ class MacPasteInjector:
                 'tell application "System Events" to key code 36',
             ])
 
-        args = ["osascript"]
-        for line in script:
-            args.extend(["-e", line])
-        result = subprocess.run(args, check=False, capture_output=True, text=True, timeout=5)
+        result = self._run_osascript(script, success_message="Pasted into the focused app")
         time.sleep(0.2)
         if previous_text is not None:
             self._set_clipboard(previous_text)
 
+        return result
+
+    def _run_osascript(self, script: list[str], *, success_message: str) -> PasteResult:
+        if platform.system() != "Darwin":
+            return PasteResult(False, "macOS keyboard control is only available on macOS")
+
+        args = ["osascript"]
+        for line in script:
+            args.extend(["-e", line])
+        try:
+            result = subprocess.run(args, check=False, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return PasteResult(False, f"macOS keyboard control failed: {exc}")
         if result.returncode != 0:
-            message = (result.stderr or result.stdout or "macOS paste failed").strip()
+            message = (result.stderr or result.stdout or "macOS keyboard control failed").strip()
             return PasteResult(False, message)
-        return PasteResult(True, "Pasted into the focused app")
+        return PasteResult(True, success_message)
 
     def _read_clipboard(self) -> str | None:
         try:

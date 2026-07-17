@@ -28,8 +28,8 @@ It owns:
 - Screen rendering with LVGL.
 - Wi-Fi connection.
 - Polling `GET /state`.
-- Posting button events to `/event` and `/quota/refresh`.
-- Blue front-button push-to-talk recording.
+- Posting button events to `/event`.
+- Blue front-button controls: single click sends Return, double click stops the current Codex turn, and long press records push-to-talk audio.
 - 16 kHz / 16-bit / mono PCM recording from the StickS3 microphone.
 - Uploading PCM to `/recording/audio`.
 - Agent status sounds generated as PCM and played through ES8311/I2S speaker output.
@@ -48,6 +48,7 @@ It owns:
 - Recording session state.
 - Optional ASR via local command or Groq API.
 - Transcript paste injection into the active macOS app.
+- Return-key injection for sending a draft and Codex-targeted Escape injection for stopping the current turn.
 - HUD state file updates for recording status.
 
 Bridge state is stored under:

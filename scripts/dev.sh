@@ -18,4 +18,4 @@ case "${VIBE_STICK_BRIDGE_TOKEN:-}" in
     ;;
 esac
 
-PYTHONPATH="$ROOT_DIR/bridge/src" exec python3 -m vibe_stick --host 0.0.0.0 --port 8765
+PYTHONPATH="$ROOT_DIR/bridge/src" exec "${VIBE_STICK_PYTHON:-python3}" -m vibe_stick --host 0.0.0.0 --port 8765
