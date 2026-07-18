@@ -44,6 +44,10 @@ completion alert still plays once. Background subagent sessions (including appro
 guardians) are excluded. A newer turn in the same conversation clears that
 conversation's older stale alert.
 
+While Codex is `RUNNING`, a small numeric badge replaces the status dot immediately
+before the running label. It counts running user root conversations only; the badge
+is hidden for all other states and never includes background subagents.
+
 When several conversations complete between two device polls, the Bridge presents
 their unique alerts in order for at least 6 seconds each. The firmware's event-id
 deduplication therefore plays one sound per completion instead of collapsing them

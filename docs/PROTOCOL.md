@@ -54,6 +54,7 @@ Returns the current bridge state:
     "implemented": true,
     "status": "RUNNING",
     "project": "vibestick",
+    "active_conversations": 0,
     "quota_5h_remaining": 66,
     "quota_7d_remaining": 96,
     "quota_updated_at": "13:01",
@@ -62,6 +63,7 @@ Returns the current bridge state:
   "codex": {
     "status": "RUNNING",
     "project": "vibestick",
+    "active_conversations": 2,
     "quota_5h_remaining": 53,
     "quota_7d_remaining": 93,
     "quota_updated_at": "13:01",
@@ -79,7 +81,7 @@ Returns the current bridge state:
 
 `battery` is intentionally `null` from the bridge. The StickS3 displays its local PMIC battery reading.
 
-`active_provider` selects which normalized `provider` block the firmware should render. `provider.quota_5h_remaining` and `provider.quota_7d_remaining` are remaining percentages from `0` to `100`; `null` means unknown and the firmware renders `--%`. The legacy `codex` block remains present for backward compatibility.
+`active_provider` selects which normalized `provider` block the firmware should render. `active_conversations` is the number of running root conversations, clamped to `0` through `99`; Codex subagent sessions are excluded. The firmware shows this number only while Codex is `RUNNING`. `provider.quota_5h_remaining` and `provider.quota_7d_remaining` are remaining percentages from `0` to `100`; `null` means unknown and the firmware renders `--%`. The legacy `codex` block remains present for backward compatibility.
 
 ## GET /health
 

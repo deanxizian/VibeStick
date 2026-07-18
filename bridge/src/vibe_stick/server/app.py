@@ -972,6 +972,7 @@ def _codex_state_from_observation(observation: ProviderObservation) -> CodexStat
         quota_7d_remaining=observation.quota_7d_remaining,
         quota_updated_at=observation.quota_updated_at,
         quota_stale=observation.quota_stale,
+        active_conversations=observation.active_conversations,
     )
 
 
@@ -986,6 +987,7 @@ def _provider_state_from_observation(observation: ProviderObservation) -> Provid
         quota_7d_remaining=observation.quota_7d_remaining,
         quota_updated_at=observation.quota_updated_at,
         quota_stale=observation.quota_stale,
+        active_conversations=observation.active_conversations,
     )
 
 

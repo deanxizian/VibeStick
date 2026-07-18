@@ -32,6 +32,7 @@ class CodexState:
     quota_7d_remaining: int | None = None
     quota_updated_at: str = ""
     quota_stale: bool = False
+    active_conversations: int = 0
 
 
 @dataclass
@@ -45,6 +46,7 @@ class ProviderState:
     quota_7d_remaining: int | None = None
     quota_updated_at: str = ""
     quota_stale: bool = False
+    active_conversations: int = 0
 
 
 @dataclass
@@ -80,12 +82,18 @@ class VibeStickState:
             7,
         )
         data["provider"]["status"] = self.provider.status.value
+        data["provider"]["active_conversations"] = _active_conversation_count(
+            self.provider.active_conversations
+        )
         data["codex"]["project"] = _bounded_utf8(self.codex.project, 36)
         data["codex"]["quota_updated_at"] = _bounded_utf8(
             self.codex.quota_updated_at,
             7,
         )
         data["codex"]["status"] = self.codex.status.value
+        data["codex"]["active_conversations"] = _active_conversation_count(
+            self.codex.active_conversations
+        )
         data["alert"]["event_id"] = _bounded_identifier(self.alert.event_id, 55)
         data["alert"]["message"] = _bounded_utf8(self.alert.message, 72)
         data["alert"]["type"] = self.alert.type.value
@@ -123,6 +131,9 @@ def state_from_dict(data: object) -> VibeStickState:
             quota_7d_remaining=_percent_or_none(codex_data.get("quota_7d_remaining")),
             quota_updated_at=str(codex_data.get("quota_updated_at") or ""),
             quota_stale=bool(codex_data.get("quota_stale", False)),
+            active_conversations=_active_conversation_count(
+                codex_data.get("active_conversations")
+            ),
         ),
         alert=AlertState(
             event_id=str(alert_data.get("event_id") or ""),
@@ -144,6 +155,9 @@ def _provider_state_from_dict(provider_data: dict[str, Any], codex_data: dict[st
             quota_7d_remaining=_percent_or_none(provider_data.get("quota_7d_remaining")),
             quota_updated_at=str(provider_data.get("quota_updated_at") or ""),
             quota_stale=bool(provider_data.get("quota_stale", False)),
+            active_conversations=_active_conversation_count(
+                provider_data.get("active_conversations")
+            ),
         )
 
     return ProviderState(
@@ -156,6 +170,9 @@ def _provider_state_from_dict(provider_data: dict[str, Any], codex_data: dict[st
         quota_7d_remaining=_percent_or_none(codex_data.get("quota_7d_remaining")),
         quota_updated_at=str(codex_data.get("quota_updated_at") or ""),
         quota_stale=bool(codex_data.get("quota_stale", False)),
+        active_conversations=_active_conversation_count(
+            codex_data.get("active_conversations")
+        ),
     )
 
 
@@ -185,6 +202,16 @@ def _percent_or_none(value: object) -> int | None:
     return max(0, min(100, number))
 
 
+def _active_conversation_count(value: object) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        number = int(value)
+    except (OverflowError, TypeError, ValueError):
+        return 0
+    return max(0, min(99, number))
+
+
 def _bounded_utf8(value: object, max_bytes: int) -> str:
     encoded = str(value or "").encode("utf-8", errors="replace")
     if len(encoded) <= max_bytes:
@@ -209,6 +236,7 @@ def default_state() -> VibeStickState:
         quota_7d_remaining=None,
         quota_updated_at="",
         quota_stale=False,
+        active_conversations=0,
     )
     return VibeStickState(
         time=now_time_text(),
@@ -226,6 +254,7 @@ def default_state() -> VibeStickState:
             quota_7d_remaining=codex.quota_7d_remaining,
             quota_updated_at=codex.quota_updated_at,
             quota_stale=codex.quota_stale,
+            active_conversations=codex.active_conversations,
         ),
         codex=codex,
         alert=AlertState(event_id="", type=AlertType.NONE, message=""),

@@ -12,6 +12,22 @@ from vibe_stick.server import app
 
 
 class ServerProviderTests(unittest.TestCase):
+    def test_running_conversation_count_reaches_both_state_blocks(self) -> None:
+        observation = self._obs(
+            "codex",
+            status=AgentStatus.RUNNING,
+            active_conversations=3,
+        )
+
+        self.assertEqual(
+            app._codex_state_from_observation(observation).active_conversations,
+            3,
+        )
+        self.assertEqual(
+            app._provider_state_from_observation(observation).active_conversations,
+            3,
+        )
+
     def test_configured_provider_accepts_known_values_only(self) -> None:
         with mock.patch.dict(os.environ, {"VIBE_STICK_PROVIDER": "claude"}):
             self.assertEqual(app._configured_provider(), "claude")
@@ -362,6 +378,7 @@ class ServerProviderTests(unittest.TestCase):
         alert_type: str = "NONE",
         alert_message: str = "",
         alert_event_id: str = "",
+        active_conversations: int = 0,
     ) -> ProviderObservation:
         return ProviderObservation(
             provider_id=provider_id,
@@ -377,6 +394,7 @@ class ServerProviderTests(unittest.TestCase):
             alert_message=alert_message,
             alert_event_id=alert_event_id,
             latest_event_timestamp=latest,
+            active_conversations=active_conversations,
         )
 
 

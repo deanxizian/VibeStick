@@ -42,6 +42,7 @@ def observation_from_local_codex(observation: LocalCodexObservation) -> Provider
         alert_message=alert_message,
         alert_event_id=alert_event_id,
         latest_event_timestamp=observation.latest_event_timestamp,
+        active_conversations=observation.active_conversations,
         alert_events=tuple(
             ProviderAlert(
                 event_id=alert.event_id,

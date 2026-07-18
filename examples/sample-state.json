@@ -6,6 +6,7 @@
   "codex": {
     "status": "RUNNING",
     "project": "ai-signal",
+    "active_conversations": 2,
     "quota_5h_remaining": 62,
     "quota_7d_remaining": 84,
     "quota_updated_at": "09:38",

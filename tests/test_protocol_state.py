@@ -26,6 +26,7 @@ class ProtocolStateTests(unittest.TestCase):
                     "quota_5h_remaining": 66,
                     "quota_7d_remaining": 96,
                     "quota_updated_at": "09:38",
+                    "active_conversations": 2,
                 }
             }
         )
@@ -35,7 +36,9 @@ class ProtocolStateTests(unittest.TestCase):
         self.assertEqual(payload["provider"]["id"], "codex")
         self.assertEqual(payload["provider"]["status"], "RUNNING")
         self.assertEqual(payload["provider"]["quota_5h_remaining"], 66)
+        self.assertEqual(payload["provider"]["active_conversations"], 2)
         self.assertEqual(payload["codex"]["status"], "RUNNING")
+        self.assertEqual(payload["codex"]["active_conversations"], 2)
 
     def test_generic_provider_block_serializes_status_string(self) -> None:
         state = default_state()
@@ -71,6 +74,7 @@ class ProtocolStateTests(unittest.TestCase):
                     "status": "NOT_A_STATUS",
                     "quota_5h_remaining": float("inf"),
                     "quota_7d_remaining": 140,
+                    "active_conversations": 140,
                 },
                 "alert": {"type": []},
             }
@@ -81,6 +85,8 @@ class ProtocolStateTests(unittest.TestCase):
         self.assertEqual(state.codex.status, AgentStatus.UNKNOWN)
         self.assertIsNone(state.codex.quota_5h_remaining)
         self.assertEqual(state.codex.quota_7d_remaining, 100)
+        self.assertEqual(state.provider.active_conversations, 0)
+        self.assertEqual(state.codex.active_conversations, 99)
         self.assertEqual(state.alert.type.value, "NONE")
 
     def test_device_state_has_bounded_utf8_fields_and_payload(self) -> None:

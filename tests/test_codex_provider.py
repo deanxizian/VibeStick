@@ -102,6 +102,7 @@ class CodexProviderTests(unittest.TestCase):
                 alert_timestamp=timestamp,
                 latest_event_timestamp=timestamp,
                 codex_online=True,
+                active_conversations=3,
             )
         )
 
@@ -113,6 +114,7 @@ class CodexProviderTests(unittest.TestCase):
         self.assertEqual(observation.alert_type, "DONE")
         self.assertEqual(observation.alert_event_id, f"evt_{timestamp.astimezone().strftime('%Y%m%d_%H%M%S')}_done")
         self.assertEqual(observation.latest_event_timestamp, timestamp)
+        self.assertEqual(observation.active_conversations, 3)
 
     def test_missing_codex_quota_maps_to_unknown_bars(self) -> None:
         observation = observation_from_local_codex(
@@ -204,11 +206,13 @@ class CodexProviderTests(unittest.TestCase):
         )
 
         self.assertEqual(observation.status, AgentStatus.RUNNING)
+        self.assertEqual(observation.active_conversations, 1)
         self.assertEqual(observation.alert_type, "DONE")
         self.assertTrue(observation.latest_session_path.endswith("just-completed.jsonl"))
 
         provider_observation = observation_from_local_codex(observation)
         self.assertEqual(provider_observation.status, AgentStatus.RUNNING)
+        self.assertEqual(provider_observation.active_conversations, 1)
         self.assertEqual(provider_observation.alert_type, "DONE")
         self.assertEqual(
             provider_observation.alert_event_id,
@@ -243,6 +247,35 @@ class CodexProviderTests(unittest.TestCase):
 
         self.assertEqual(len(observation.alert_events), 2)
         self.assertEqual(len({alert.event_id for alert in observation.alert_events}), 2)
+
+    def test_counts_running_root_conversations_only(self) -> None:
+        now = datetime.now(timezone.utc)
+
+        observation = self._observe_sessions(
+            {
+                "running-one": [
+                    self._event(now - timedelta(seconds=3), "task_started", turn_id="turn-1"),
+                ],
+                "running-two": [
+                    self._event(now - timedelta(seconds=2), "task_started", turn_id="turn-2"),
+                ],
+                "completed": [
+                    self._event(now - timedelta(seconds=4), "task_started", turn_id="turn-3"),
+                    self._event(now - timedelta(seconds=1), "task_complete", turn_id="turn-3"),
+                ],
+                "subagent": [
+                    self._session_meta(
+                        now - timedelta(seconds=3),
+                        thread_source="subagent",
+                        source={"subagent": {"other": "worker"}},
+                    ),
+                    self._event(now, "task_started", turn_id="turn-subagent"),
+                ],
+            }
+        )
+
+        self.assertEqual(observation.status, AgentStatus.RUNNING)
+        self.assertEqual(observation.active_conversations, 2)
 
     def test_all_user_conversations_are_observed(self) -> None:
         now = datetime.now(timezone.utc)

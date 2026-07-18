@@ -59,6 +59,7 @@ class LocalCodexObservation:
     latest_session_path: str = ""
     codex_online: bool = False
     alert_events: tuple[LocalCodexAlert, ...] = ()
+    active_conversations: int = 0
 
 
 @dataclass(frozen=True)
@@ -117,28 +118,37 @@ def observe_codex(project_root: Path) -> LocalCodexObservation:
         project = _project_name_from_path(latest_cwd[1])
 
     quota_snapshot = _quota_at_time(latest_quota, now)
-    active_turn_exists = any(
+    active_conversations = sum(
         summary.turn_lifecycle is not None
         and summary.turn_lifecycle[1] == "task_started"
         and summary.latest_event is not None
         and now - summary.latest_event[0] <= RUNNING_ACTIVITY_WINDOW
         for summary in summaries
     )
+    if (
+        active_conversations == 0
+        and latest_event is not None
+        and latest_event[1] not in TURN_TERMINAL_TYPES
+        and now - latest_event[0] <= RUNNING_ACTIVITY_WINDOW
+    ):
+        # Older Codex logs do not always include task lifecycle events. Keep
+        # the existing recent-activity fallback, but make it explicit in the
+        # count so RUNNING and the number shown on the device cannot disagree.
+        active_conversations = 1
     if not codex_online:
         status = AgentStatus.OFFLINE
+        active_conversations = 0
     elif (
         latest_alert
         and latest_alert[1] in {AgentStatus.APPROVAL, AgentStatus.ERROR}
     ):
         status = latest_alert[1]
-    elif active_turn_exists:
+    elif active_conversations > 0:
         status = AgentStatus.RUNNING
     elif latest_alert:
         status = latest_alert[1]
     elif latest_event and latest_event[1] in TURN_TERMINAL_TYPES:
         status = AgentStatus.IDLE
-    elif latest_event and now - latest_event[0] <= RUNNING_ACTIVITY_WINDOW:
-        status = AgentStatus.RUNNING
     else:
         status = AgentStatus.IDLE
 
@@ -149,6 +159,7 @@ def observe_codex(project_root: Path) -> LocalCodexObservation:
         quota_found=quota_snapshot is not None,
         latest_session_path=latest_session_path,
         codex_online=codex_online,
+        active_conversations=active_conversations,
         alert_events=tuple(
             LocalCodexAlert(
                 event_id=alert[4],

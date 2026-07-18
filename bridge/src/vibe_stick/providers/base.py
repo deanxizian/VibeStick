@@ -31,6 +31,7 @@ class ProviderObservation:
     alert_event_id: str
     latest_event_timestamp: datetime | None = None
     alert_events: tuple[ProviderAlert, ...] = ()
+    active_conversations: int = 0
 
 
 class Provider(Protocol):
