@@ -494,7 +494,7 @@ ok = env_has_asr(dotenv) or any(
 raise SystemExit(0 if ok else 1)
 PY
   then
-    pass "ASR is configured through command, Groq, or OpenAI-compatible settings."
+    pass "ASR is configured through command or OpenAI-compatible settings."
   else
     warn "ASR is not configured; recording can capture audio but will not transcribe."
   fi

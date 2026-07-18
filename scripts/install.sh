@@ -289,7 +289,18 @@ validate_unique_secret_defines "$SECRETS_PATH"
 require_bridge_token_ready
 
 configured_python="$(env_value VIBE_STICK_PYTHON "$ENV_PATH")"
-PYTHON_BIN="${configured_python:-python3}"
+managed_arch="$(uname -m)"
+if [ "$managed_arch" = "arm64" ]; then
+  managed_arch="aarch64"
+fi
+managed_python="$HOME/.local/share/vibestick/python/cpython-3.12-macos-$managed_arch-none/bin/python3.12"
+if [ -n "$configured_python" ]; then
+  PYTHON_BIN="$configured_python"
+elif [ -x "$managed_python" ]; then
+  PYTHON_BIN="$managed_python"
+else
+  PYTHON_BIN="python3"
+fi
 if ! resolved_python="$(command -v "$PYTHON_BIN" 2>/dev/null)" || [ -z "$resolved_python" ]; then
   printf '%s\n' "Configured Python is not installed or executable: $PYTHON_BIN" >&2
   printf '%s\n' "Install Python >= 3.11 and set VIBE_STICK_PYTHON to its absolute path in .env." >&2

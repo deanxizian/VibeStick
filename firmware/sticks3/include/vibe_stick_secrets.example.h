@@ -8,3 +8,4 @@
 #define VIBE_STICK_BRIDGE_HOST "192.168.1.10"
 #define VIBE_STICK_BRIDGE_PORT 8765
 #define VIBE_STICK_BRIDGE_TOKEN "paste-generated-token-here"
+#define VIBE_STICK_DEPLOYMENT_NONCE ""

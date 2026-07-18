@@ -12,7 +12,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs, urlparse
 
 from vibe_stick import __version__ as BRIDGE_VERSION
@@ -62,6 +62,62 @@ PLACEHOLDER_BRIDGE_TOKENS = {
     "change-me",
     "your-token",
 }
+VIBESTICK_FIRMWARE_NAME = "vibestick"
+MAX_FIRMWARE_METADATA_LENGTH = 128
+
+
+class DevicePresenceTracker:
+    """Tracks the latest authenticated VibeStick firmware state poll in memory."""
+
+    def __init__(
+        self,
+        *,
+        wall_clock: Callable[[], float] = time.time,
+        monotonic_clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._lock = threading.Lock()
+        self._wall_clock = wall_clock
+        self._monotonic_clock = monotonic_clock
+        self._last_seen_wall: float | None = None
+        self._last_seen_monotonic: float | None = None
+        self._firmware: dict[str, str] = {}
+
+    def record(self, firmware: Mapping[str, str]) -> None:
+        with self._lock:
+            self._last_seen_wall = self._wall_clock()
+            self._last_seen_monotonic = self._monotonic_clock()
+            self._firmware = dict(firmware)
+
+    def health_metadata(self) -> dict[str, Any]:
+        with self._lock:
+            last_seen_wall = self._last_seen_wall
+            last_seen_monotonic = self._last_seen_monotonic
+            firmware = dict(self._firmware)
+
+        if last_seen_wall is None or last_seen_monotonic is None:
+            return {
+                "device_last_seen_at": None,
+                "device_last_seen_age_seconds": None,
+                "device_firmware_name": None,
+                "device_firmware_version": None,
+                "device_firmware_transport": None,
+                "device_firmware_build_date": None,
+                "device_deployment_nonce": None,
+            }
+
+        age_seconds = max(0.0, self._monotonic_clock() - last_seen_monotonic)
+        seen_at = datetime.fromtimestamp(last_seen_wall, timezone.utc).isoformat(
+            timespec="milliseconds"
+        ).replace("+00:00", "Z")
+        return {
+            "device_last_seen_at": seen_at,
+            "device_last_seen_age_seconds": round(age_seconds, 3),
+            "device_firmware_name": firmware.get("name") or None,
+            "device_firmware_version": firmware.get("version") or None,
+            "device_firmware_transport": firmware.get("transport") or None,
+            "device_firmware_build_date": firmware.get("build_date") or None,
+            "device_deployment_nonce": firmware.get("deployment_nonce") or None,
+        }
 
 
 class RequestBodyError(ValueError):
@@ -440,7 +496,12 @@ class BridgeStateStore:
         return state_from_dict(self._state.to_jsonable())
 
 
-def make_handler(store: BridgeStateStore) -> type[BaseHTTPRequestHandler]:
+def make_handler(
+    store: BridgeStateStore,
+    device_presence: DevicePresenceTracker | None = None,
+) -> type[BaseHTTPRequestHandler]:
+    presence = device_presence or DevicePresenceTracker()
+
     class VibeStickHandler(BaseHTTPRequestHandler):
         server_version = "VibeStick/0.1"
 
@@ -455,7 +516,11 @@ def make_handler(store: BridgeStateStore) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 if parsed.path == "/state":
-                    self._send_json(_with_bridge_metadata(store.get_state().to_jsonable()))
+                    payload = _with_bridge_metadata(store.get_state().to_jsonable())
+                    firmware = self._authenticated_firmware_metadata()
+                    if firmware is not None:
+                        presence.record(firmware)
+                    self._send_json(payload)
                 elif parsed.path == "/health":
                     self._send_json(
                         {
@@ -468,6 +533,18 @@ def make_handler(store: BridgeStateStore) -> type[BaseHTTPRequestHandler]:
                             ),
                         }
                     )
+                elif parsed.path == "/device/health":
+                    health = {
+                        "ok": True,
+                        "bridge_name": BRIDGE_NAME,
+                        "bridge_version": BRIDGE_VERSION,
+                        "bridge_instance": os.environ.get(
+                            "VIBE_STICK_INSTALL_NONCE",
+                            "",
+                        ),
+                    }
+                    health.update(presence.health_metadata())
+                    self._send_json(health)
                 else:
                     self._send_error(HTTPStatus.NOT_FOUND, "Unknown endpoint")
             except Exception as exc:
@@ -597,6 +674,15 @@ def make_handler(store: BridgeStateStore) -> type[BaseHTTPRequestHandler]:
             supplied = self.headers.get("X-Vibe-Stick-Token", "")
             return hmac.compare_digest(supplied, expected)
 
+        def _authenticated_firmware_metadata(self) -> dict[str, str] | None:
+            expected = _bridge_token()
+            if not expected:
+                return None
+            supplied = self.headers.get("X-Vibe-Stick-Token", "")
+            if not hmac.compare_digest(supplied, expected):
+                return None
+            return _firmware_metadata_from_headers(self.headers)
+
         def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
@@ -639,6 +725,7 @@ def run_server(host: str, port: int) -> None:
 def _protected_paths() -> set[str]:
     return {
         "/state",
+        "/device/health",
         "/event",
         "/quota/refresh",
         "/recording/start",
@@ -652,6 +739,38 @@ def _bridge_token() -> str:
     if token.lower() in PLACEHOLDER_BRIDGE_TOKENS:
         return ""
     return token
+
+
+def _firmware_metadata_from_headers(headers: Mapping[str, str]) -> dict[str, str] | None:
+    name = _safe_firmware_metadata_value(
+        headers.get("X-Vibe-Stick-Firmware-Name", "")
+    )
+    if name.lower() != VIBESTICK_FIRMWARE_NAME:
+        return None
+    return {
+        "name": VIBESTICK_FIRMWARE_NAME,
+        "version": _safe_firmware_metadata_value(
+            headers.get("X-Vibe-Stick-Firmware-Version", "")
+        ),
+        "transport": _safe_firmware_metadata_value(
+            headers.get("X-Vibe-Stick-Firmware-Transport", "")
+        ),
+        "build_date": _safe_firmware_metadata_value(
+            headers.get("X-Vibe-Stick-Firmware-Build-Date", "")
+        ),
+        "deployment_nonce": _safe_firmware_metadata_value(
+            headers.get("X-Vibe-Stick-Deployment-Nonce", "")
+        ),
+    }
+
+
+def _safe_firmware_metadata_value(value: str) -> str:
+    normalized = " ".join(str(value).split())
+    if not normalized or len(normalized) > MAX_FIRMWARE_METADATA_LENGTH:
+        return ""
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in normalized):
+        return ""
+    return normalized
 
 
 def _enforce_bind_security(host: str) -> None:

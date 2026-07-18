@@ -1082,6 +1082,7 @@ static esp_err_t http_request_timeout(const char *method, const char *path, cons
     esp_http_client_set_header(client, "X-Vibe-Stick-Firmware-Version", FIRMWARE_VERSION);
     esp_http_client_set_header(client, "X-Vibe-Stick-Firmware-Transport", TRANSPORT);
     esp_http_client_set_header(client, "X-Vibe-Stick-Firmware-Build-Date", __DATE__ " " __TIME__);
+    esp_http_client_set_header(client, "X-Vibe-Stick-Deployment-Nonce", VIBE_STICK_DEPLOYMENT_NONCE);
     if (strlen(VIBE_STICK_BRIDGE_TOKEN) > 0) {
         esp_http_client_set_header(client, "X-Vibe-Stick-Token", VIBE_STICK_BRIDGE_TOKEN);
     }
@@ -1129,6 +1130,7 @@ static esp_err_t http_post_binary(const char *path, const uint8_t *body, size_t 
     esp_http_client_set_header(client, "X-Vibe-Stick-Firmware-Version", FIRMWARE_VERSION);
     esp_http_client_set_header(client, "X-Vibe-Stick-Firmware-Transport", TRANSPORT);
     esp_http_client_set_header(client, "X-Vibe-Stick-Firmware-Build-Date", __DATE__ " " __TIME__);
+    esp_http_client_set_header(client, "X-Vibe-Stick-Deployment-Nonce", VIBE_STICK_DEPLOYMENT_NONCE);
     if (strlen(VIBE_STICK_BRIDGE_TOKEN) > 0) {
         esp_http_client_set_header(client, "X-Vibe-Stick-Token", VIBE_STICK_BRIDGE_TOKEN);
     }

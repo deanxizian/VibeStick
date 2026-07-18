@@ -46,7 +46,7 @@ It owns:
 - HTTP API for the StickS3.
 - Local Codex status and quota observation from `~/.codex/sessions/**/*.jsonl`.
 - Recording session state.
-- Optional ASR via local command or Groq API.
+- Optional ASR via a local command or an OpenAI-compatible API.
 - Transcript paste injection into the active macOS app.
 - Return-key injection for sending a draft and Codex-targeted Escape injection for stopping the current turn.
 - HUD state file updates for recording status.

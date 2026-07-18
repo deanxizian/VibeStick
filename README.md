@@ -15,7 +15,7 @@ VibeStick targets M5Stack StickS3 hardware and is not an official M5Stack projec
 - [ ] M5Stack StickS3 and a USB-C data cable.
 - [ ] A Mac on the same network as the StickS3.
 - [ ] Wi-Fi name and password. The Wi-Fi must be 2.4 GHz; StickS3 / ESP32-S3 does not support 5 GHz Wi-Fi.
-- [ ] Python 3.11 or newer (Python 3.12 is recommended) and the Xcode Command Line Tools, which provide `swiftc`.
+- [ ] The Xcode Command Line Tools, which provide `swiftc`. The graphical installer opens Apple's installer if they are missing and downloads an isolated Python 3.12 runtime automatically; manual installation still needs Python 3.11 or newer.
 - [ ] To show Claude 5H/7D usage: this feature is off by default (safer). It needs the Claude Code CLI (run `claude` then `/login` in Terminal) and `VIBE_STICK_CLAUDE_USAGE=on` in `.env`.
 - [ ] An ASR API key for speech transcription. Recommended: SiliconFlow at its official entry point, <https://cloud.siliconflow.cn>. It works directly in China, has free quota, and is OpenAI-compatible. The demo video uses SiliconFlow. You can also use another OpenAI-compatible ASR provider's `base_url` and model name instead.
 
@@ -24,6 +24,20 @@ Building the firmware needs ESP-IDF v5.5.x — a one-time toolchain install (~1 
 ## Install
 
 You can do this manually, or hand the command steps to an AI coding agent such as Claude Code and Codex.
+
+### Graphical installer (developer preview)
+
+On macOS 14 or newer, the native setup app presents a three-step flow: enter Wi-Fi and optional voice-input details, connect the StickS3, then let the app install and verify everything automatically. Advanced settings and technical logs stay hidden unless needed:
+
+```sh
+git clone https://github.com/GaryGaryyy/VibeStick.git
+cd VibeStick
+./script/build_and_run.sh
+```
+
+The built `.app` embeds a minimal secret-free project template and installs it into `~/Library/Application Support/VibeStick/InstallerProject` on first launch. It can therefore run away from the source checkout without Documents-folder access. It still downloads ESP-IDF (about 1 GB) on first use and is not yet a notarized DMG for public distribution. See [`app/macos/README.md`](app/macos/README.md) for the current security and packaging boundary.
+
+### Manual install
 
 > Legend: steps marked 👤 are PHYSICAL steps that need a human to act directly, such as plugging in the cable, long-pressing or short-pressing the power button, and granting macOS permissions in System Settings. AI agents should run the shell steps in order, then pause at each 👤 step and ask the user to complete it before continuing.
 
@@ -66,7 +80,7 @@ If `python3` is older than 3.11, install a current Python from [python.org](http
 
 3. 👤 Plug the StickS3 into the Mac with the USB-C data cable.
 
-4. 👤 Put the StickS3 into download mode: long-press the side power button until the blue LED double-blinks and the screen turns off. This is required for ESP32-S3 flashing.
+4. 👤 Put the StickS3 into download mode: long-press the side power button until the indicator LED blinks twice and the screen turns off. This is required for ESP32-S3 flashing.
 
 5. Install ESP-IDF if it is not already present, then load it into the current shell. This is a one-time toolchain install with a large ~1 GB download and can take a few minutes. Run the load command in every new terminal before `idf.py`:
 
@@ -97,7 +111,7 @@ ls /dev/cu.*
 
 Wait for `Hash of data verified`.
 
-7. 👤 Short-press the power button to wake the screen. The blue LED should turn off, the screen should turn on, and you should see the VibeStick home screen. Before networking is ready, it may show offline.
+7. 👤 Short-press the power button to wake the screen. The indicator LED should turn off, the screen should turn on, and you should see the VibeStick home screen. Before networking is ready, it may show offline.
 
 8. Install the local macOS bridge and HUD:
 
@@ -147,7 +161,7 @@ Adjust the path if your ESP-IDF checkout is somewhere else. Run this once in eve
 
 ### Flashing says "Device not configured" or cannot open the serial port
 
-Unplug and replug the USB-C data cable. Put the StickS3 into download mode again: long-press the side power button until the blue LED double-blinks and the screen turns off. Run `ls /dev/cu.*` to find the port, then retry `idf.py -p <port> build flash`.
+Unplug and replug the USB-C data cable. Put the StickS3 into download mode again: long-press the side power button until the indicator LED blinks twice and the screen turns off. Run `ls /dev/cu.*` to find the port, then retry `idf.py -p <port> build flash`.
 
 ### StickS3 cannot join Wi-Fi
 
@@ -227,15 +241,6 @@ VIBE_STICK_ASR_API_KEY=your-api-key
 VIBE_STICK_ASR_MODEL=provider-model-name
 ```
 
-Groq is also supported as an overseas preset:
-
-```sh
-VIBE_STICK_ASR_PROVIDER=groq
-VIBE_STICK_ASR_API_KEY=your-groq-key
-```
-
-The legacy aliases `VIBE_STICK_GROQ_API_KEY`, `VIBE_STICK_GROQ_MODEL`, and `VIBE_STICK_GROQ_LANGUAGE` remain supported.
-
 ### ASR option 3: local command (offline)
 
 ```sh
@@ -267,7 +272,9 @@ VibeStick/
   docs/
   firmware/sticks3/
   bridge/src/vibe_stick/
+  app/macos/Sources/VibeStickSetup/
   app/macos/VibeStickHUD/
+  script/build_and_run.sh
   scripts/
   tests/
 ```
@@ -277,6 +284,7 @@ VibeStick/
 ```sh
 python3 -m compileall -q bridge/src tests
 PYTHONPATH=bridge/src python3 -m unittest discover -s tests
+swift test --package-path app/macos
 sh -n scripts/*.sh
 bash -n scripts/*.sh
 ```
@@ -294,7 +302,7 @@ The v0.1.5 review and remaining-risk register are in
 
 ## Current limits
 
-- This is a cleaned prototype, not a packaged Mac app or DMG.
+- The native setup app is a developer preview staged locally from SwiftPM; it is not yet a notarized public DMG.
 - The firmware targets M5Stack StickS3 only.
 - Codex quota is inferred from local Codex session JSONL events with `rate_limits`; it is not an official quota API.
 - Claude usage comes from an undocumented Claude Code OAuth endpoint and is disabled by default.

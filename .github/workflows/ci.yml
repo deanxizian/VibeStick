@@ -41,10 +41,16 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check POSIX shell syntax
-        run: sh -n scripts/*.sh
+        run: |
+          for file in scripts/*.sh; do
+            sh -n "$file"
+          done
 
       - name: Check Bash parse compatibility
-        run: bash -n scripts/*.sh
+        run: |
+          for file in scripts/*.sh script/*.sh; do
+            bash -n "$file"
+          done
 
   macos-helper-build:
     runs-on: macos-14
@@ -60,8 +66,17 @@ jobs:
       - name: Type-check microphone helper
         run: xcrun swiftc -typecheck bridge/tools/vibe_stick_mic_recorder.swift -framework AVFoundation
 
+      - name: Build macOS setup app
+        run: swift build --package-path app/macos
+
+      - name: Test macOS setup app
+        run: swift test --package-path app/macos
+
       - name: Check scripts with macOS sh
-        run: sh -n scripts/*.sh
+        run: |
+          for file in scripts/*.sh; do
+            sh -n "$file"
+          done
 
   firmware-build:
     runs-on: ubuntu-latest

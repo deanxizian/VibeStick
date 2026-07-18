@@ -85,6 +85,11 @@ class ServerSecurityTests(unittest.TestCase):
             self.assertEqual(health.status, 200)
             health.read()
 
+            connection.request("GET", "/device/health")
+            protected_health = connection.getresponse()
+            self.assertEqual(protected_health.status, 401)
+            protected_health.read()
+
             connection.request("GET", "/state")
             unauthorized = connection.getresponse()
             self.assertEqual(unauthorized.status, 401)
@@ -100,6 +105,138 @@ class ServerSecurityTests(unittest.TestCase):
             self.assertEqual(authorized.status, 200)
             self.assertEqual(payload["bridge_name"], app.BRIDGE_NAME)
             connection.close()
+
+    def test_health_reports_only_authenticated_vibestick_firmware_polls(self) -> None:
+        store = _TestStore()
+        token = "a" * 40
+        firmware_headers = {
+            "X-Vibe-Stick-Token": token,
+            "X-Vibe-Stick-Firmware-Name": "vibestick",
+            "X-Vibe-Stick-Firmware-Version": "0.1.5",
+            "X-Vibe-Stick-Firmware-Transport": "wifi",
+            "X-Vibe-Stick-Firmware-Build-Date": "Jul 17 2026 10:20:30",
+            "X-Vibe-Stick-Deployment-Nonce": "deployment-0123456789abcdef0123456789abcdef",
+        }
+        with mock.patch.dict(
+            os.environ,
+            {"VIBE_STICK_BRIDGE_TOKEN": token},
+            clear=True,
+        ), _running_server(store) as port:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+
+            connection.request("GET", "/device/health", headers={"X-Vibe-Stick-Token": token})
+            initial = connection.getresponse()
+            initial_payload = json.loads(initial.read())
+            self.assertIsNone(initial_payload["device_last_seen_at"])
+            self.assertIsNone(initial_payload["device_last_seen_age_seconds"])
+            self.assertIsNone(initial_payload["device_firmware_name"])
+
+            connection.request(
+                "GET",
+                "/state",
+                headers={
+                    **firmware_headers,
+                    "X-Vibe-Stick-Token": "wrong-token",
+                },
+            )
+            unauthorized = connection.getresponse()
+            self.assertEqual(unauthorized.status, 401)
+            unauthorized.read()
+
+            connection.request(
+                "GET",
+                "/state",
+                headers={
+                    **firmware_headers,
+                    "X-Vibe-Stick-Firmware-Name": "not-vibestick",
+                },
+            )
+            wrong_firmware = connection.getresponse()
+            self.assertEqual(wrong_firmware.status, 200)
+            wrong_firmware.read()
+
+            connection.request("GET", "/device/health", headers={"X-Vibe-Stick-Token": token})
+            unchanged = connection.getresponse()
+            unchanged_payload = json.loads(unchanged.read())
+            self.assertIsNone(unchanged_payload["device_last_seen_at"])
+
+            connection.request("GET", "/state", headers=firmware_headers)
+            state = connection.getresponse()
+            self.assertEqual(state.status, 200)
+            state.read()
+
+            connection.request("GET", "/device/health", headers={"X-Vibe-Stick-Token": token})
+            health = connection.getresponse()
+            payload = json.loads(health.read())
+            connection.close()
+
+        self.assertEqual(health.status, 200)
+        self.assertTrue(payload["device_last_seen_at"].endswith("Z"))
+        self.assertGreaterEqual(payload["device_last_seen_age_seconds"], 0)
+        self.assertLess(payload["device_last_seen_age_seconds"], 1)
+        self.assertEqual(payload["device_firmware_name"], "vibestick")
+        self.assertEqual(payload["device_firmware_version"], "0.1.5")
+        self.assertEqual(payload["device_firmware_transport"], "wifi")
+        self.assertEqual(payload["device_firmware_build_date"], "Jul 17 2026 10:20:30")
+        self.assertEqual(
+            payload["device_deployment_nonce"],
+            "deployment-0123456789abcdef0123456789abcdef",
+        )
+        self.assertNotIn(token, json.dumps(payload))
+
+    def test_firmware_headers_without_a_configured_token_do_not_mark_device_online(self) -> None:
+        store = _TestStore()
+        with mock.patch.dict(os.environ, {}, clear=True), _running_server(store) as port:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+            connection.request(
+                "GET",
+                "/state",
+                headers={
+                    "X-Vibe-Stick-Firmware-Name": "vibestick",
+                    "X-Vibe-Stick-Firmware-Version": "0.1.5",
+                },
+            )
+            state = connection.getresponse()
+            self.assertEqual(state.status, 200)
+            state.read()
+
+            connection.request("GET", "/device/health")
+            health = connection.getresponse()
+            payload = json.loads(health.read())
+            connection.close()
+
+        self.assertIsNone(payload["device_last_seen_at"])
+        self.assertIsNone(payload["device_firmware_name"])
+
+    def test_device_presence_tracker_uses_monotonic_age_and_bounded_metadata(self) -> None:
+        wall_values = iter((1_721_188_800.125,))
+        monotonic_values = iter((10.0, 12.345))
+        tracker = app.DevicePresenceTracker(
+            wall_clock=lambda: next(wall_values),
+            monotonic_clock=lambda: next(monotonic_values),
+        )
+        tracker.record(
+            {
+                "name": "vibestick",
+                "version": "0.1.5",
+                "transport": "wifi",
+                "build_date": "Jul 17 2026 10:20:30",
+            }
+        )
+
+        payload = tracker.health_metadata()
+
+        self.assertEqual(payload["device_last_seen_at"], "2024-07-17T04:00:00.125Z")
+        self.assertEqual(payload["device_last_seen_age_seconds"], 2.345)
+        self.assertEqual(
+            app._firmware_metadata_from_headers(
+                {
+                    "X-Vibe-Stick-Firmware-Name": "vibestick",
+                    "X-Vibe-Stick-Firmware-Version": "x" * 129,
+                }
+            )["version"],
+            "",
+        )
 
     def test_malformed_or_non_object_json_is_rejected(self) -> None:
         store = _TestStore()

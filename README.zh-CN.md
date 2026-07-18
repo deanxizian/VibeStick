@@ -14,7 +14,7 @@ VibeStick 面向 M5Stack StickS3，不是 M5Stack 官方项目。Codex、Claude 
 
 - [ ] M5 StickS3｜一根 USB-C 数据线｜一台电脑（最好是Mac）
 - [ ] Wi-Fi（必须是 2.4GHz） 名称｜Wi-Fi密码｜语音识别模型 API Key
-- [ ] Python 3.11 或更高版本（推荐 Python 3.12），以及提供 `swiftc` 的 Xcode Command Line Tools
+- [ ] 提供 `swiftc` 的 Xcode Command Line Tools。图形安装器会在缺少时打开 Apple 安装提示，并自动下载隔离的 Python 3.12 运行组件；手动安装仍需 Python 3.11 或更高版本
 -  语音转写 API key 推荐从 SiliconFlow 官方入口获取：<https://cloud.siliconflow.cn>。国内直连、有免费额度、OpenAI 兼容；演示视频用的就是 SiliconFlow。可改用其他 OpenAI 兼容服务的 `base_url` 和模型名称。
 -  如要显示 Claude 5H/7D 用量（该功能默认关闭）。需要 Claude Code CLI（在终端运行 `claude` 后执行 `/login`），并在 `.env` 中设置 `VIBE_STICK_CLAUDE_USAGE=on`。
 
@@ -22,6 +22,20 @@ VibeStick 面向 M5Stack StickS3，不是 M5Stack 官方项目。Codex、Claude 
 ## 安装
 
 你可以手动执行，也可以交给 AI 编程 agent，例如 Claude Code 和 Codex。
+
+### 图形安装器（开发预览版）
+
+macOS 14 或更高版本可以直接使用原生安装器。主界面只有三步：填写 Wi‑Fi 和可选的语音输入、连接 StickS3、自动安装并检查结果；高级参数和技术日志仅在需要时展开：
+
+```sh
+git clone https://github.com/GaryGaryyy/VibeStick.git
+cd VibeStick
+./script/build_and_run.sh
+```
+
+构建出的 `.app` 已包含一份不带密码的最小项目模板，首次启动会自动放到 `~/Library/Application Support/VibeStick/InstallerProject`，因此应用可以离开源码目录独立运行，也不需要“文稿”目录权限。首次使用仍会下载约 1 GB 的 ESP-IDF；它还不是面向公众分发的公证 DMG。当前安全与打包边界见 [`app/macos/README.md`](app/macos/README.md)。
+
+### 手动安装
 
 > 说明：标 👤 的步骤是需要人亲自动手的物理操作，例如插线、长按/短按电源键、在系统设置里授权。AI agent 请按顺序执行 shell 步骤，执行到 👤 步骤时暂停，让用户完成后再继续。
 
@@ -64,7 +78,7 @@ xcrun --find swiftc
 
 3. 👤 用 USB-C 数据线把 StickS3 插到 Mac。
 
-4. 👤 让 StickS3 进入下载模式：长按侧面电源键，直到蓝灯双闪、屏幕熄灭。这是 ESP32-S3 烧录必需步骤。
+4. 👤 让 StickS3 进入下载模式：长按侧面电源键，直到指示灯闪烁两次、屏幕熄灭。这是 ESP32-S3 烧录必需步骤。
 
 5. 如果本机还没有 ESP-IDF，先安装；然后把它加载到当前 shell。这是一次性工具链安装，下载较大（约 1GB），可能需要几分钟。每开一个新终端，在运行 `idf.py` 前都要先执行加载命令：
 
@@ -95,7 +109,7 @@ ls /dev/cu.*
 
 等到终端出现 `Hash of data verified`。
 
-7. 👤 短按电源键唤醒屏幕。蓝灯应熄灭、屏幕亮起，此时应看到 VibeStick 首页。联网前可能显示离线。
+7. 👤 短按电源键唤醒屏幕。指示灯应熄灭、屏幕亮起，此时应看到 VibeStick 首页。联网前可能显示离线。
 
 8. 安装本机 macOS bridge 和 HUD：
 
@@ -145,7 +159,7 @@ ESP-IDF 没有加载到当前 shell，或者还没有安装。先 source ESP-IDF
 
 ### 烧录报 "Device not configured" 或连不上串口
 
-重新插拔 USB-C 数据线。再次进入下载模式：长按侧面电源键，直到蓝灯双闪、屏幕熄灭。运行 `ls /dev/cu.*` 找端口，然后重试 `idf.py -p <port> build flash`。
+重新插拔 USB-C 数据线。再次进入下载模式：长按侧面电源键，直到指示灯闪烁两次、屏幕熄灭。运行 `ls /dev/cu.*` 找端口，然后重试 `idf.py -p <port> build flash`。
 
 ### StickS3 连不上 Wi-Fi
 
@@ -225,15 +239,6 @@ VIBE_STICK_ASR_API_KEY=your-api-key
 VIBE_STICK_ASR_MODEL=provider-model-name
 ```
 
-Groq 也作为海外可选 preset 保留：
-
-```sh
-VIBE_STICK_ASR_PROVIDER=groq
-VIBE_STICK_ASR_API_KEY=your-groq-key
-```
-
-旧别名 `VIBE_STICK_GROQ_API_KEY`、`VIBE_STICK_GROQ_MODEL`、`VIBE_STICK_GROQ_LANGUAGE` 仍然支持。
-
 ### ASR 方案 3：本地命令（离线）
 
 ```sh
@@ -265,7 +270,9 @@ VibeStick/
   docs/
   firmware/sticks3/
   bridge/src/vibe_stick/
+  app/macos/Sources/VibeStickSetup/
   app/macos/VibeStickHUD/
+  script/build_and_run.sh
   scripts/
   tests/
 ```
@@ -275,6 +282,7 @@ VibeStick/
 ```sh
 python3 -m compileall -q bridge/src tests
 PYTHONPATH=bridge/src python3 -m unittest discover -s tests
+swift test --package-path app/macos
 sh -n scripts/*.sh
 bash -n scripts/*.sh
 ```
@@ -292,7 +300,7 @@ v0.1.5 的完整审查、验证记录和剩余风险见
 
 ## 当前限制
 
-- 这是整理后的原型，不是打包好的 Mac app 或 DMG。
+- 原生安装器目前是由 SwiftPM 在本机生成的开发预览版，还不是经过公证、可公开分发的 DMG。
 - 固件只面向 M5Stack StickS3。
 - Codex quota 来自本地 Codex session JSONL 里的 `rate_limits`，不是官方 quota API。
 - Claude usage 来自未公开的 Claude Code OAuth endpoint，默认关闭。
