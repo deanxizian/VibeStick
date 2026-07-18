@@ -89,4 +89,6 @@ jobs:
 
       - name: Build StickS3 firmware with ESP-IDF 5.5.1
         working-directory: firmware/sticks3
-        run: idf.py build
+        # GitHub Actions replaces the image entrypoint with `tail`, so invoke
+        # ESP-IDF's entrypoint explicitly to populate PATH and Python tooling.
+        run: /opt/esp/entrypoint.sh idf.py build

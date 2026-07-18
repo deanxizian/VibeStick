@@ -1,6 +1,7 @@
 import SwiftUI
 import VibeStickSetupCore
 
+@MainActor
 struct NetworkSetupStepView: View {
     @Bindable var store: SetupStore
     let onContinue: () -> Void

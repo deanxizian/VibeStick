@@ -43,12 +43,17 @@ class RecordingControllerTests(unittest.TestCase):
             self.controller.start(self._request("bbbbbbbb"))
 
     def test_abandoned_sticks3_lease_does_not_block_new_session_forever(self) -> None:
-        self.controller.start(self._request("aaaaaaaa"))
-        self.controller._active_lease_started = (
-            recorder.time.monotonic() - recorder.DEFAULT_STICKS3_LEASE_SECONDS - 1
-        )
+        # A fresh CI runner can have less uptime than the lease duration. Use a
+        # stable monotonic clock so the synthetic timestamp never collides with
+        # the controller's zero sentinel for an uninitialized lease.
+        monotonic_now = recorder.DEFAULT_STICKS3_LEASE_SECONDS + 10.0
+        with mock.patch.object(recorder.time, "monotonic", return_value=monotonic_now):
+            self.controller.start(self._request("aaaaaaaa"))
+            self.controller._active_lease_started = (
+                monotonic_now - recorder.DEFAULT_STICKS3_LEASE_SECONDS - 1
+            )
 
-        replacement = self.controller.start(self._request("bbbbbbbb"))
+            replacement = self.controller.start(self._request("bbbbbbbb"))
 
         self.assertEqual(replacement.session_id, "bbbbbbbb")
         self.assertTrue(replacement.active)

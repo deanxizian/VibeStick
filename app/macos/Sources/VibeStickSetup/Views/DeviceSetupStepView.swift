@@ -1,6 +1,7 @@
 import SwiftUI
 import VibeStickSetupCore
 
+@MainActor
 struct DeviceSetupStepView: View {
     @Bindable var store: SetupStore
     let onBack: () -> Void

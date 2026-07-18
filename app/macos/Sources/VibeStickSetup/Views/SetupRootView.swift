@@ -1,6 +1,7 @@
 import SwiftUI
 import VibeStickSetupCore
 
+@MainActor
 struct SetupRootView: View {
     @Bindable var store: SetupStore
 
