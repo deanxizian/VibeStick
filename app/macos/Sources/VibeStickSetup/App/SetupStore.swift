@@ -517,8 +517,8 @@ final class SetupStore {
                     operationTitle = "正在准备 Mac 运行组件"
                     appendLog("正在下载经过校验的 Python 运行组件。\n")
                     try await coordinator.installPythonRuntime(
-                        onOutput: { [weak self] output in
-                            Task { @MainActor in self?.appendLog(output) }
+                        onOutput: { output in
+                            Task { @MainActor [weak self] in self?.appendLog(output) }
                         }
                     )
                     await refreshSystem()
@@ -535,8 +535,8 @@ final class SetupStore {
                     operationTitle = "正在下载安装组件（约 1 GB）"
                     appendLog("首次安装需要下载 ESP32-S3 安装组件，请保持网络连接。\n")
                     try await coordinator.installToolchain(
-                        onOutput: { [weak self] output in
-                            Task { @MainActor in self?.appendLog(output) }
+                        onOutput: { output in
+                            Task { @MainActor [weak self] in self?.appendLog(output) }
                         }
                     )
                     await refreshSystem()
@@ -560,8 +560,8 @@ final class SetupStore {
                     onStep: { [weak self] phase, state in
                         await self?.setStep(phase, state: state)
                     },
-                    onOutput: { [weak self] output in
-                        Task { @MainActor in self?.appendLog(output) }
+                    onOutput: { output in
+                        Task { @MainActor [weak self] in self?.appendLog(output) }
                     }
                 )
                 assignConfiguration(saved)
@@ -597,8 +597,8 @@ final class SetupStore {
             do {
                 let result = try await coordinator.runDoctor(
                     configuration: configuration,
-                    onOutput: { [weak self] output in
-                        Task { @MainActor in self?.appendLog(output) }
+                    onOutput: { output in
+                        Task { @MainActor [weak self] in self?.appendLog(output) }
                     }
                 )
                 diagnosticRecords = DoctorOutputParser.parse(result.output)
