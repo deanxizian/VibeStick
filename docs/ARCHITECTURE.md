@@ -89,12 +89,12 @@ Codex status is inferred from local Codex process/session activity and recent se
 
 Codex observation covers all user-started root conversations visible in local session data. Background subagents are excluded. A completion in any root conversation can publish an alert even while another conversation keeps the aggregate screen status at `RUNNING`.
 
-The StickS3 provider surface is limited to the providers explicitly compiled into the firmware.
+The StickS3 home screen is dedicated to Codex status and quota.
 
 ## v0.1.5 Limits
 
 - No packaged Mac App.
 - No signed firmware release artifact.
 - No general device abstraction beyond StickS3.
-- No official provider API for quota.
+- No official Codex API for quota.
 - No BLE runtime transport.

@@ -10,7 +10,6 @@ APP_SUPPORT_DIR = (
 )
 STATE_PATH = APP_SUPPORT_DIR / "state.json"
 QUOTA_PATH = APP_SUPPORT_DIR / "quota.json"
-CLAUDE_QUOTA_PATH = APP_SUPPORT_DIR / "claude-quota.json"
 RECORDING_PATH = APP_SUPPORT_DIR / "recording.json"
 HUD_STATE_PATH = APP_SUPPORT_DIR / "hud-state.json"
 RECORDINGS_DIR = APP_SUPPORT_DIR / "Recordings"
@@ -23,7 +22,6 @@ def ensure_app_support() -> Path:
     for path in (
         STATE_PATH,
         QUOTA_PATH,
-        CLAUDE_QUOTA_PATH,
         RECORDING_PATH,
         HUD_STATE_PATH,
     ):

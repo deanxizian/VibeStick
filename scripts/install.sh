@@ -364,7 +364,7 @@ for line_number, source_line in enumerate(lines, 1):
     raw_value = raw_value.strip()
     if not allowed_key.fullmatch(key):
         raise SystemExit(f"Invalid .env key on line {line_number}")
-    if not (key.startswith("VIBE_STICK_") or key == "CLAUDE_CODE_OAUTH_TOKEN"):
+    if not key.startswith("VIBE_STICK_"):
         raise SystemExit(f"Unsupported .env key on line {line_number}: {key}")
     if key in seen_keys:
         raise SystemExit(f"Duplicate .env key on line {line_number}: {key}")

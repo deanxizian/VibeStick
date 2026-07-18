@@ -70,12 +70,9 @@ class VibeStickState:
     def to_jsonable(self) -> dict[str, Any]:
         data = asdict(self)
         data["battery"] = None
-        data["active_provider"] = _bounded_utf8(self.active_provider, 15)
-        data["provider"]["id"] = _bounded_utf8(self.provider.id, 15)
-        data["provider"]["display_name"] = _bounded_utf8(
-            self.provider.display_name,
-            32,
-        )
+        data["active_provider"] = "codex"
+        data["provider"]["id"] = "codex"
+        data["provider"]["display_name"] = "Codex"
         data["provider"]["project"] = _bounded_utf8(self.provider.project, 36)
         data["provider"]["quota_updated_at"] = _bounded_utf8(
             self.provider.quota_updated_at,
@@ -122,7 +119,7 @@ def state_from_dict(data: object) -> VibeStickState:
         wifi=bool(data.get("wifi", True)),
         ble=bool(data.get("ble", False)),
         battery=data.get("battery"),
-        active_provider=str(data.get("active_provider") or provider_state.id),
+        active_provider="codex",
         provider=provider_state,
         codex=CodexState(
             status=_agent_status(codex_data.get("status")),
@@ -144,11 +141,11 @@ def state_from_dict(data: object) -> VibeStickState:
 
 
 def _provider_state_from_dict(provider_data: dict[str, Any], codex_data: dict[str, Any]) -> ProviderState:
-    if provider_data:
+    if str(provider_data.get("id") or "").lower() == "codex":
         return ProviderState(
-            id=str(provider_data.get("id") or "codex"),
-            display_name=str(provider_data.get("display_name") or "Codex"),
-            implemented=bool(provider_data.get("implemented", True)),
+            id="codex",
+            display_name="Codex",
+            implemented=True,
             status=_agent_status(provider_data.get("status")),
             project=str(provider_data.get("project") or "vibestick"),
             quota_5h_remaining=_percent_or_none(provider_data.get("quota_5h_remaining")),

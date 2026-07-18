@@ -12,7 +12,7 @@ acknowledge within a reasonable time and keep you posted on a fix.
 VibeStick is an early-preview hobby project. Security-relevant areas:
 - The local bridge HTTP service (binds 0.0.0.0:8765 by default for LAN access; protected
   endpoints, including `GET /state`, require a shared `VIBE_STICK_BRIDGE_TOKEN`).
-- Credential handling (Claude Code OAuth token, ASR API keys) — kept local, never committed or logged.
+- Credential handling for ASR API keys — kept local, never committed or logged.
 - The StickS3 firmware.
 
 ## Good to know
@@ -42,8 +42,5 @@ VibeStick is an early-preview hobby project. Security-relevant areas:
 - A normal `scripts/uninstall.sh` retains installed config, logs, transcripts, and recordings.
   Use `scripts/uninstall.sh --purge` when those local files should also be removed; repository
   `.env` and firmware secrets still require separate deletion.
-- The opt-in Claude usage feature calls an undocumented Anthropic endpoint using your local
-  Claude Code credentials; it is off by default and may change or break without notice.
-
 ## Supported versions
 This is a fast-moving preview; only the latest `main` / release receives fixes.

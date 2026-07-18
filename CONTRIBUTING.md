@@ -21,7 +21,7 @@ CI runs the bridge checks on every push / PR.
 - Never commit secrets — keep keys/tokens/Wi-Fi creds in the gitignored `.env` and
   `vibe_stick_secrets.h`; don't log tokens or raw API responses.
 - Match the surrounding code style; add/update tests for behavior changes.
-- Don't change provider icons / generated assets without discussion.
+- Don't change status icons / generated assets without discussion.
 
 ## Pull requests
 1. Fork and create a branch. 2. Make focused commits with clear messages.

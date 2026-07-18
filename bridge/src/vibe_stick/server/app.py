@@ -21,10 +21,8 @@ from vibe_stick.audio.recorder import (
     RecordingController,
     RecordingRequestError,
 )
-from vibe_stick.claude.usage import fetch_usage as fetch_claude_usage
-from vibe_stick.claude.usage import to_quota_snapshot as claude_usage_to_quota
 from vibe_stick.codex.quota import QuotaSnapshot, load_quota, save_quota
-from vibe_stick.config.paths import CLAUDE_QUOTA_PATH, QUOTA_PATH, RECORDING_PATH, STATE_PATH, ensure_app_support
+from vibe_stick.config.paths import QUOTA_PATH, RECORDING_PATH, STATE_PATH, ensure_app_support
 from vibe_stick.config.storage import atomic_write_text
 from vibe_stick.desktop.hud import hide_hud
 from vibe_stick.paste.input_injector import MacPasteInjector, PasteResult
@@ -41,14 +39,11 @@ from vibe_stick.protocol.state import (
     state_from_dict,
 )
 from vibe_stick.providers.base import ProviderAlert, ProviderObservation
-from vibe_stick.providers.claude import observe_claude
 from vibe_stick.providers.codex import observe_codex
 
 MANUAL_STATUS_SECONDS = 60
 BRIDGE_NAME = "vibestick-bridge"
 DEFAULT_MAX_RECORDING_AUDIO_BYTES = 2_000_000
-DEFAULT_CLAUDE_USAGE_INTERVAL_SECONDS = 300
-MIN_CLAUDE_USAGE_INTERVAL_SECONDS = 30
 ALERT_PRESENTATION_SECONDS = 6.0
 MAX_JSON_BODY_BYTES = 64 * 1024
 REQUEST_SOCKET_TIMEOUT_SECONDS = 10
@@ -160,14 +155,6 @@ class BridgeStateStore:
         self._project_root = _resolve_project_root()
         self._manual_status_until = 0.0
         self._state = self._load_state()
-        self._last_active_provider = self._state.active_provider or "codex"
-        self._claude_quota = load_quota(CLAUDE_QUOTA_PATH)
-        if not _has_quota(self._claude_quota):
-            self._claude_quota = _claude_quota_from_state(self._state)
-        self._claude_usage_last_attempt = 0.0
-        self._claude_usage_last_success = 0.0
-        self._claude_usage_generation = 0
-        self._claude_usage_thread: threading.Thread | None = None
         self._alert_tracking_initialized = False
         self._seen_alert_event_ids: set[str] = set()
         self._seen_alert_event_order: deque[str] = deque()
@@ -218,18 +205,11 @@ class BridgeStateStore:
             return self._state_snapshot_locked()
 
     def refresh_quota_locked(self) -> None:
-        if self._state.active_provider == "claude":
-            self._refresh_claude_usage_locked(force=True)
-            self._state.provider = _provider_state_from_observation(
-                self._apply_claude_quota(observe_claude(self._project_root))
-            )
-            return
-
         codex_observation = observe_codex(self._project_root)
         self._apply_codex_quota(codex_observation, force_stale=True)
         self._state.codex = _codex_state_from_observation(codex_observation)
-        if self._state.active_provider == "codex":
-            self._state.provider = _provider_state_from_observation(codex_observation)
+        self._state.active_provider = "codex"
+        self._state.provider = _provider_state_from_observation(codex_observation)
 
     def start_recording(self, request: dict[str, Any] | None = None) -> dict[str, Any]:
         session = self.recording.start(request)
@@ -259,42 +239,21 @@ class BridgeStateStore:
 
     def _refresh_providers_locked(self) -> None:
         codex_observation = observe_codex(self._project_root)
-        claude_observation = observe_claude(self._project_root)
         self._apply_codex_quota(codex_observation)
 
         if time.monotonic() < self._manual_status_until:
             _apply_manual_codex_state(codex_observation, self._state)
 
-        active_provider = _select_active_provider(
-            _configured_provider(),
-            self._last_active_provider,
-            codex_observation,
-            claude_observation,
-        )
-        self._last_active_provider = active_provider
-        self._state.active_provider = active_provider
-
-        if active_provider == "claude":
-            self._refresh_claude_usage_locked(force=False)
-            active_observation = self._apply_claude_quota(claude_observation)
-        else:
-            active_observation = codex_observation
-
+        self._state.active_provider = "codex"
         self._state.codex = _codex_state_from_observation(codex_observation)
-        self._state.provider = _provider_state_from_observation(active_observation)
-        self._apply_alerts_from_observations(
-            active_observation,
-            codex_observation,
-            claude_observation,
-        )
+        self._state.provider = _provider_state_from_observation(codex_observation)
+        self._apply_alerts_from_observation(codex_observation)
 
-    def _apply_alerts_from_observations(
+    def _apply_alerts_from_observation(
         self,
-        active_observation: ProviderObservation,
-        *observations: ProviderObservation,
+        observation: ProviderObservation,
     ) -> None:
-        preferred = _select_alert_observation(active_observation, *observations)
-        alert_events = _collect_alert_events(preferred, *observations)
+        alert_events = _collect_alert_events(observation)
         now = time.monotonic()
 
         if not self._alert_tracking_initialized:
@@ -336,9 +295,6 @@ class BridgeStateStore:
             visible_event_ids = {alert.event_id for alert in alert_events}
             if self._state.alert.event_id in visible_event_ids:
                 return
-            # Never switch back to an older, already-consumed event merely
-            # because its provider is active. That A→B→A transition makes the
-            # device ring twice for A because it only remembers the last id.
             self._state.alert = AlertState(event_id="", type=AlertType.NONE, message="")
 
     def _remember_alert_event_id(self, event_id_value: str) -> None:
@@ -381,91 +337,14 @@ class BridgeStateStore:
         observation.quota_updated_at = refreshed.quota_updated_at
         observation.quota_stale = refreshed.quota_stale
 
-    def _refresh_claude_usage_locked(self, *, force: bool) -> None:
-        now = time.monotonic()
-        interval = _claude_usage_interval_seconds()
-        if not force and now - self._claude_usage_last_attempt < interval:
-            return
-        if not force:
-            running = self._claude_usage_thread
-            if running is not None and running.is_alive():
-                return
-            self._claude_usage_last_attempt = now
-            generation = self._next_claude_usage_generation_locked()
-            self._claude_usage_thread = threading.Thread(
-                target=self._refresh_claude_usage_background,
-                args=(generation,),
-                name="vibestick-claude-quota",
-                daemon=True,
-            )
-            self._claude_usage_thread.start()
-            return
-
-        self._claude_usage_last_attempt = now
-        generation = self._next_claude_usage_generation_locked()
-        usage = fetch_claude_usage()
-        if generation == self._claude_usage_generation:
-            self._apply_claude_usage_result_locked(usage, now)
-
-    def _next_claude_usage_generation_locked(self) -> int:
-        self._claude_usage_generation = getattr(
-            self,
-            "_claude_usage_generation",
-            0,
-        ) + 1
-        return self._claude_usage_generation
-
-    def _refresh_claude_usage_background(self, generation: int) -> None:
-        try:
-            usage = fetch_claude_usage()
-        except Exception as exc:  # Provider failures must never take down state serving.
-            print(f"claude quota refresh failed: {type(exc).__name__}", flush=True)
-            usage = None
-        now = time.monotonic()
-        with self._lock:
-            if generation != self._claude_usage_generation:
-                return
-            self._apply_claude_usage_result_locked(usage, now)
-
-    def _apply_claude_usage_result_locked(self, usage: object | None, now: float) -> None:
-        if usage is None:
-            if _has_quota(self._claude_quota):
-                self._claude_quota = _stale_quota(self._claude_quota)
-                save_quota(CLAUDE_QUOTA_PATH, self._claude_quota)
-            else:
-                self._claude_quota = QuotaSnapshot()
-            return
-
-        self._claude_quota = claude_usage_to_quota(usage)
-        save_quota(CLAUDE_QUOTA_PATH, self._claude_quota)
-        self._claude_usage_last_success = now
-
-    def _apply_claude_quota(self, observation: ProviderObservation) -> ProviderObservation:
-        quota = self._current_claude_quota()
-        observation.quota_5h_remaining = quota.quota_5h_remaining
-        observation.quota_7d_remaining = quota.quota_7d_remaining
-        observation.quota_updated_at = quota.quota_updated_at
-        observation.quota_stale = quota.quota_stale
-        return observation
-
-    def _current_claude_quota(self) -> QuotaSnapshot:
-        if (
-            self._claude_quota.quota_5h_remaining is None
-            and self._claude_quota.quota_7d_remaining is None
-        ):
-            return self._claude_quota
-        if self._claude_usage_last_success and time.monotonic() - self._claude_usage_last_success > 30 * 60:
-            return _stale_quota(self._claude_quota)
-        return self._claude_quota
-
     def _set_codex_status(self, raw_status: str, message: str) -> None:
         try:
             status = AgentStatus(raw_status.upper())
         except ValueError:
             status = AgentStatus.UNKNOWN
         self._state.codex.status = status
-        if self._state.active_provider == "codex":
-            self._state.provider.status = status
+        self._state.active_provider = "codex"
+        self._state.provider.status = status
         if status == AgentStatus.DONE:
             self._state.alert = AlertState(event_id("done"), AlertType.DONE, message or "Codex task completed")
         elif status == AgentStatus.APPROVAL:
@@ -836,23 +715,6 @@ def _stale_quota(existing: QuotaSnapshot) -> QuotaSnapshot:
     )
 
 
-def _has_quota(snapshot: QuotaSnapshot) -> bool:
-    return snapshot.quota_5h_remaining is not None or snapshot.quota_7d_remaining is not None
-
-
-def _claude_quota_from_state(state: VibeStickState) -> QuotaSnapshot:
-    provider = state.provider
-    if provider.id != "claude":
-        return QuotaSnapshot()
-    snapshot = QuotaSnapshot(
-        quota_5h_remaining=provider.quota_5h_remaining,
-        quota_7d_remaining=provider.quota_7d_remaining,
-        quota_updated_at=provider.quota_updated_at,
-        quota_stale=True,
-    )
-    return snapshot if _has_quota(snapshot) else QuotaSnapshot()
-
-
 def _first(query: dict[str, list[str]], key: str) -> str:
     values = query.get(key) or []
     return values[0] if values else ""
@@ -864,80 +726,32 @@ def _with_bridge_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _configured_provider() -> str:
-    value = os.environ.get("VIBE_STICK_PROVIDER", "auto").strip().lower()
-    return value if value in {"codex", "claude", "auto"} else "auto"
-
-
-def _select_active_provider(
-    configured: str,
-    last_active: str,
-    codex_observation: ProviderObservation,
-    claude_observation: ProviderObservation,
-) -> str:
-    if configured in {"codex", "claude"}:
-        return configured
-
-    if codex_observation.online and not claude_observation.online:
-        return "codex"
-    if claude_observation.online and not codex_observation.online:
-        return "claude"
-    if codex_observation.online and claude_observation.online:
-        codex_time = codex_observation.latest_event_timestamp
-        claude_time = claude_observation.latest_event_timestamp
-        if codex_time is not None and claude_time is not None:
-            return "claude" if claude_time > codex_time else "codex"
-        if claude_time is not None:
-            return "claude"
-        if codex_time is not None:
-            return "codex"
-        return last_active if last_active in {"codex", "claude"} else "codex"
-
-    return last_active if last_active in {"codex", "claude"} else "codex"
-
-
-def _select_alert_observation(
-    active_observation: ProviderObservation,
-    *observations: ProviderObservation,
-) -> ProviderObservation:
-    if _observation_has_alert(active_observation):
-        return active_observation
-    for observation in observations:
-        if observation is active_observation:
-            continue
-        if _observation_has_alert(observation):
-            return observation
-    return active_observation
-
-
 def _collect_alert_events(
-    preferred: ProviderObservation,
-    *observations: ProviderObservation,
+    observation: ProviderObservation,
 ) -> tuple[ProviderAlert, ...]:
     events: list[ProviderAlert] = []
     seen_event_ids: set[str] = set()
-    for observation in (preferred, *observations):
-        candidates = observation.alert_events
-        if not candidates and _observation_has_alert(observation):
-            candidates = (
-                ProviderAlert(
-                    event_id=observation.alert_event_id,
-                    alert_type=observation.alert_type,
-                    message=observation.alert_message,
-                    timestamp=observation.latest_event_timestamp,
-                ),
-            )
-        for alert in candidates:
-            if not alert.event_id or alert.event_id in seen_event_ids:
-                continue
-            try:
-                alert_type = AlertType(alert.alert_type)
-            except ValueError:
-                continue
-            if alert_type not in {AlertType.DONE, AlertType.APPROVAL, AlertType.ERROR}:
-                continue
-            seen_event_ids.add(alert.event_id)
-            events.append(alert)
+    candidates = observation.alert_events
+    if not candidates and _observation_has_alert(observation):
+        candidates = (
+            ProviderAlert(
+                event_id=observation.alert_event_id,
+                alert_type=observation.alert_type,
+                message=observation.alert_message,
+                timestamp=observation.latest_event_timestamp,
+            ),
+        )
+    for alert in candidates:
+        if not alert.event_id or alert.event_id in seen_event_ids:
+            continue
+        try:
+            alert_type = AlertType(alert.alert_type)
+        except ValueError:
+            continue
+        if alert_type not in {AlertType.DONE, AlertType.APPROVAL, AlertType.ERROR}:
+            continue
+        seen_event_ids.add(alert.event_id)
+        events.append(alert)
     events.sort(
         key=lambda alert: alert.timestamp.timestamp()
         if alert.timestamp is not None
@@ -952,16 +766,6 @@ def _observation_has_alert(observation: ProviderObservation) -> bool:
     except ValueError:
         return False
     return alert_type in {AlertType.DONE, AlertType.APPROVAL, AlertType.ERROR} and bool(observation.alert_event_id)
-
-
-def _claude_usage_interval_seconds() -> int:
-    try:
-        value = int(os.environ.get("VIBE_STICK_CLAUDE_USAGE_INTERVAL_SECONDS", ""))
-    except ValueError:
-        value = DEFAULT_CLAUDE_USAGE_INTERVAL_SECONDS
-    if value <= 0:
-        value = DEFAULT_CLAUDE_USAGE_INTERVAL_SECONDS
-    return max(MIN_CLAUDE_USAGE_INTERVAL_SECONDS, value)
 
 
 def _codex_state_from_observation(observation: ProviderObservation) -> CodexState:

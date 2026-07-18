@@ -152,14 +152,14 @@ class JsonlHelperTests(unittest.TestCase):
         self.assertEqual(calls, 1)
 
     def test_process_command_snapshot_is_shared_within_ttl(self) -> None:
-        completed = mock.Mock(returncode=0, stdout="codex app-server\nclaude\n")
+        completed = mock.Mock(returncode=0, stdout="codex app-server\nhelper\n")
         _jsonl.clear_process_command_cache()
         with mock.patch.object(_jsonl.subprocess, "run", return_value=completed) as run:
             first = _jsonl.process_commands()
             second = _jsonl.process_commands()
         _jsonl.clear_process_command_cache()
 
-        self.assertEqual(first, ("codex app-server", "claude"))
+        self.assertEqual(first, ("codex app-server", "helper"))
         self.assertEqual(second, first)
         run.assert_called_once()
 

@@ -47,16 +47,16 @@ Returns the current bridge state:
   "wifi": true,
   "ble": false,
   "battery": null,
-  "active_provider": "claude",
+  "active_provider": "codex",
   "provider": {
-    "id": "claude",
-    "display_name": "Claude",
+    "id": "codex",
+    "display_name": "Codex",
     "implemented": true,
     "status": "RUNNING",
     "project": "vibestick",
-    "active_conversations": 0,
-    "quota_5h_remaining": 66,
-    "quota_7d_remaining": 96,
+    "active_conversations": 2,
+    "quota_5h_remaining": 53,
+    "quota_7d_remaining": 93,
     "quota_updated_at": "13:01",
     "quota_stale": false
   },
@@ -81,7 +81,7 @@ Returns the current bridge state:
 
 `battery` is intentionally `null` from the bridge. The StickS3 displays its local PMIC battery reading.
 
-`active_provider` selects which normalized `provider` block the firmware should render. `active_conversations` is the number of running root conversations, clamped to `0` through `99`; Codex subagent sessions are excluded. The firmware shows this number only while Codex is `RUNNING`. `provider.quota_5h_remaining` and `provider.quota_7d_remaining` are remaining percentages from `0` to `100`; `null` means unknown and the firmware renders `--%`. The legacy `codex` block remains present for backward compatibility.
+`active_provider` is fixed to `codex`, and the normalized `provider` block mirrors the `codex` block for older firmware. `active_conversations` is the number of running root conversations, clamped to `0` through `99`; Codex subagent sessions are excluded. The firmware shows this number only while Codex is `RUNNING`. `quota_5h_remaining` and `quota_7d_remaining` are remaining percentages from `0` to `100`; `null` means unknown and the firmware renders `--%`. Current firmware reads the `codex` block directly.
 
 ## GET /health
 
@@ -119,7 +119,7 @@ Manual `DONE`, `ERROR`, and `APPROVAL` statuses produce alert fields for local t
 
 ## POST /quota/refresh
 
-Requests a quota refresh for the active provider. Codex refreshes from local session events. Claude refreshes the cached usage snapshot only when `VIBE_STICK_CLAUDE_USAGE` is enabled; failures keep the provider quota fields `null` so the firmware shows `--%`.
+Requests a Codex quota refresh from local session events. If no valid local snapshot is available, quota fields remain `null` and the firmware shows `--%`.
 
 ```json
 {

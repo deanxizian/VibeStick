@@ -50,7 +50,6 @@
 #define HTTP_JSON_RESPONSE_CAPACITY 2048
 
 #define PIN_BUTTON_FRONT 11
-#define PIN_BUTTON_SIDE 12
 #define PIN_LCD_MOSI 39
 #define PIN_LCD_SCK 40
 #define PIN_LCD_DC 45
@@ -66,28 +65,11 @@ typedef enum {
     VIBE_STICK_EVENT_DOUBLE_CLICK,
     VIBE_STICK_EVENT_LONG_START,
     VIBE_STICK_EVENT_LONG_STOP,
-    VIBE_STICK_EVENT_PROVIDER_NEXT,
 } agent_event_type_t;
 
 typedef struct {
     agent_event_type_t type;
 } agent_event_t;
-
-typedef enum {
-    PROVIDER_CODEX = 0,
-    PROVIDER_CLAUDE = 1,
-    PROVIDER_COUNT,
-} agent_provider_t;
-
-typedef struct {
-    agent_provider_t id;
-    const char *key;
-    const char *display_name;
-    const lv_image_dsc_t *icon;
-    lv_color_t accent_color;
-    bool enabled;
-    bool implemented;
-} agent_provider_config_t;
 
 typedef struct {
     char time[8];
@@ -97,14 +79,6 @@ typedef struct {
     bool battery_valid;
     bool battery_charging;
     bool usb_powered;
-    char codex_status[24];
-    char project[40];
-    int quota_5h;
-    int quota_7d;
-    bool quota_5h_valid;
-    bool quota_7d_valid;
-    char quota_updated_at[8];
-    bool quota_stale;
     char alert_event_id[56];
     char alert_type[24];
     char alert_message[80];
@@ -120,7 +94,7 @@ typedef struct {
     bool quota_7d_valid;
     char quota_updated_at[8];
     bool quota_stale;
-} provider_display_state_t;
+} codex_display_state_t;
 
 typedef struct {
     char *data;
@@ -158,9 +132,9 @@ static lv_obj_t *s_battery_icon;
 static lv_obj_t *s_battery_fill;
 static lv_obj_t *s_battery_cap;
 static lv_obj_t *s_battery_bolt;
-static lv_obj_t *s_provider_icon;
+static lv_obj_t *s_codex_icon;
 static lv_obj_t *s_active_count_label;
-static lv_obj_t *s_provider_label;
+static lv_obj_t *s_codex_label;
 static lv_obj_t *s_status_dot;
 static lv_obj_t *s_status_label;
 static lv_obj_t *s_quota_5h_title_label;
@@ -184,70 +158,27 @@ static agent_state_t s_state = {
     .battery_valid = false,
     .battery_charging = false,
     .usb_powered = false,
-    .codex_status = "OFFLINE",
+    .alert_event_id = "",
+    .alert_type = "NONE",
+    .alert_message = "",
+};
+
+static codex_display_state_t s_codex_state = {
+    .status = "OFFLINE",
     .project = "vibestick",
+    .active_conversations = 0,
     .quota_5h = 0,
     .quota_7d = 0,
     .quota_5h_valid = false,
     .quota_7d_valid = false,
     .quota_updated_at = "",
     .quota_stale = false,
-    .alert_event_id = "",
-    .alert_type = "NONE",
-    .alert_message = "",
-};
-
-static provider_display_state_t s_provider_states[PROVIDER_COUNT] = {
-    [PROVIDER_CODEX] = {
-        .status = "OFFLINE",
-        .project = "vibestick",
-        .active_conversations = 0,
-        .quota_5h = 0,
-        .quota_7d = 0,
-        .quota_5h_valid = false,
-        .quota_7d_valid = false,
-        .quota_updated_at = "",
-        .quota_stale = false,
-    },
-    [PROVIDER_CLAUDE] = {
-        .status = "OFFLINE",
-        .project = "vibestick",
-        .active_conversations = 0,
-        .quota_5h = 0,
-        .quota_7d = 0,
-        .quota_5h_valid = false,
-        .quota_7d_valid = false,
-        .quota_updated_at = "",
-        .quota_stale = false,
-    },
 };
 
 extern const lv_font_t vibe_stick_cn_16;
 #define FONT_CN (&vibe_stick_cn_16)
 
-static const agent_provider_config_t s_provider_configs[] = {
-    {
-        .id = PROVIDER_CODEX,
-        .key = "codex",
-        .display_name = "Codex",
-        .icon = &vibe_stick_provider_codex_icon_40,
-        .accent_color = LV_COLOR_MAKE(0x4d, 0x82, 0xff),
-        .enabled = true,
-        .implemented = true,
-    },
-    {
-        .id = PROVIDER_CLAUDE,
-        .key = "claude",
-        .display_name = "Claude",
-        .icon = &vibe_stick_provider_claude_icon_40,
-        .accent_color = LV_COLOR_MAKE(0xd9, 0x77, 0x57),
-        .enabled = true,
-        .implemented = true,
-    },
-};
-
-static agent_provider_t s_current_provider = PROVIDER_CODEX;
-static bool s_provider_manually_selected;
+static const lv_color_t s_codex_accent_color = LV_COLOR_MAKE(0x4d, 0x82, 0xff);
 
 static const lv_point_precise_t s_battery_bolt_points[] = {
     {3, 0},
@@ -270,92 +201,6 @@ static void queue_event(agent_event_type_t type)
     if (xQueueSend(s_event_queue, &event, 0) != pdTRUE) {
         ESP_LOGW(TAG, "event queue full; dropped type=%d", (int)type);
     }
-}
-
-static const agent_provider_config_t *provider_config(agent_provider_t provider)
-{
-    for (size_t i = 0; i < sizeof(s_provider_configs) / sizeof(s_provider_configs[0]); ++i) {
-        if (s_provider_configs[i].id == provider) {
-            return &s_provider_configs[i];
-        }
-    }
-    return &s_provider_configs[0];
-}
-
-static const agent_provider_config_t *current_provider_config(void)
-{
-    return provider_config(s_current_provider);
-}
-
-static provider_display_state_t *provider_display_state(agent_provider_t provider)
-{
-    if ((int)provider >= 0 && provider < PROVIDER_COUNT) {
-        return &s_provider_states[provider];
-    }
-    return &s_provider_states[PROVIDER_CODEX];
-}
-
-static provider_display_state_t *current_provider_display_state(void)
-{
-    return provider_display_state(s_current_provider);
-}
-
-static bool provider_from_key(const char *key, agent_provider_t *provider)
-{
-    if (!key || key[0] == '\0') {
-        return false;
-    }
-    for (size_t i = 0; i < sizeof(s_provider_configs) / sizeof(s_provider_configs[0]); ++i) {
-        if (strcmp(s_provider_configs[i].key, key) == 0) {
-            if (provider) {
-                *provider = s_provider_configs[i].id;
-            }
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool set_current_provider_from_key(const char *key)
-{
-    agent_provider_t provider = PROVIDER_CODEX;
-    if (provider_from_key(key, &provider)) {
-        s_current_provider = provider;
-        return true;
-    }
-    return false;
-}
-
-static agent_provider_t next_enabled_provider(agent_provider_t current)
-{
-    const size_t count = sizeof(s_provider_configs) / sizeof(s_provider_configs[0]);
-    size_t current_index = 0;
-    for (size_t i = 0; i < count; ++i) {
-        if (s_provider_configs[i].id == current) {
-            current_index = i;
-            break;
-        }
-    }
-    for (size_t offset = 1; offset <= count; ++offset) {
-        const size_t candidate_index = (current_index + offset) % count;
-        if (s_provider_configs[candidate_index].enabled) {
-            return s_provider_configs[candidate_index].id;
-        }
-    }
-    return PROVIDER_CODEX;
-}
-
-static void switch_provider(void)
-{
-    if (s_recording_overlay_visible) {
-        ESP_LOGI(TAG, "provider switch ignored while overlay is visible");
-        return;
-    }
-    s_current_provider = next_enabled_provider(s_current_provider);
-    s_provider_manually_selected = true;
-    const agent_provider_config_t *provider = current_provider_config();
-    ESP_LOGI(TAG, "provider switched to %s", provider->key);
-    render_state();
 }
 
 static void lvgl_lock(void)
@@ -550,11 +395,11 @@ static lv_obj_t *make_plain_obj(lv_obj_t *parent, int32_t w, int32_t h,
     return obj;
 }
 
-static void create_provider_icon(lv_obj_t *parent)
+static void create_codex_icon(lv_obj_t *parent)
 {
-    s_provider_icon = lv_image_create(parent);
-    lv_image_set_src(s_provider_icon, current_provider_config()->icon);
-    lv_obj_align(s_provider_icon, LV_ALIGN_TOP_LEFT, 14, 52);
+    s_codex_icon = lv_image_create(parent);
+    lv_image_set_src(s_codex_icon, &vibe_stick_provider_codex_icon_40);
+    lv_obj_align(s_codex_icon, LV_ALIGN_TOP_LEFT, 14, 52);
 }
 
 static const char *status_text_for(const char *status)
@@ -689,7 +534,7 @@ static void create_ui(void)
     s_battery_cap = make_plain_obj(screen, 2, 7, lv_color_hex(0xf3f4f6), LV_OPA_COVER, 1);
     lv_obj_align_to(s_battery_cap, s_battery_icon, LV_ALIGN_OUT_RIGHT_MID, 1, 0);
 
-    create_provider_icon(screen);
+    create_codex_icon(screen);
 
     s_status_dot = lv_obj_create(screen);
     lv_obj_remove_style_all(s_status_dot);
@@ -703,8 +548,8 @@ static void create_ui(void)
     lv_obj_align(s_active_count_label, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(s_active_count_label, LV_OBJ_FLAG_HIDDEN);
 
-    s_provider_label = make_label(screen, "Codex", &lv_font_montserrat_16, lv_color_hex(0xf3f4f6), 60, LV_TEXT_ALIGN_LEFT);
-    lv_obj_align(s_provider_label, LV_ALIGN_TOP_LEFT, 72, 51);
+    s_codex_label = make_label(screen, "Codex", &lv_font_montserrat_16, lv_color_hex(0xf3f4f6), 60, LV_TEXT_ALIGN_LEFT);
+    lv_obj_align(s_codex_label, LV_ALIGN_TOP_LEFT, 72, 51);
 
     s_status_label = make_label(screen, "待命", FONT_CN, lv_color_hex(0xf3f4f6), 52, LV_TEXT_ALIGN_LEFT);
     lv_obj_align(s_status_label, LV_ALIGN_TOP_LEFT, 82, 73);
@@ -792,13 +637,11 @@ static void set_quota_title(lv_obj_t *label, const char *prefix, bool stale)
     }
 }
 
-static void set_status_color(const agent_provider_config_t *provider, const char *status)
+static void set_status_color(const char *status)
 {
     lv_color_t color = lv_color_hex(0x9aa0aa);
-    if (!provider->implemented) {
-        color = lv_color_hex(0x9aa0aa);
-    } else if (strcmp(status, "RUNNING") == 0 || strcmp(status, "DONE") == 0) {
-        color = provider->accent_color;
+    if (strcmp(status, "RUNNING") == 0 || strcmp(status, "DONE") == 0) {
+        color = s_codex_accent_color;
     } else if (strcmp(status, "APPROVAL") == 0) {
         color = lv_color_hex(0xcfd3da);
     } else if (strcmp(status, "IDLE") == 0 || strcmp(status, "UNKNOWN") == 0) {
@@ -812,13 +655,10 @@ static void set_status_color(const agent_provider_config_t *provider, const char
 static void render_state(void)
 {
     lvgl_lock();
-    const agent_provider_config_t *provider = current_provider_config();
-    const provider_display_state_t *display_state = current_provider_display_state();
-    const bool implemented = provider->implemented;
-    const bool q5_valid = implemented && display_state->quota_5h_valid;
-    const bool q7_valid = implemented && display_state->quota_7d_valid;
-    const bool quota_stale = implemented && display_state->quota_stale;
-    const char *status_key = implemented ? display_state->status : "UNIMPLEMENTED";
+    const codex_display_state_t *display_state = &s_codex_state;
+    const bool q5_valid = display_state->quota_5h_valid;
+    const bool q7_valid = display_state->quota_7d_valid;
+    const bool quota_stale = display_state->quota_stale;
 
     lv_label_set_text(s_wifi_label, "WiFi");
     lv_obj_set_style_text_color(s_wifi_label, lv_color_hex(0xf3f4f6), 0);
@@ -829,18 +669,12 @@ static void render_state(void)
     }
     set_battery_ui(s_state.battery, s_state.battery_valid,
                    s_state.battery_charging, s_state.usb_powered);
-    if (provider->icon) {
-        lv_image_set_src(s_provider_icon, provider->icon);
-        lv_obj_clear_flag(s_provider_icon, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(s_provider_icon, LV_OBJ_FLAG_HIDDEN);
-    }
-    lv_label_set_text(s_provider_label, provider->display_name);
-    lv_obj_set_style_text_color(s_provider_label, provider->implemented ? lv_color_hex(0xf3f4f6) : lv_color_hex(0xd7d9de), 0);
-    lv_label_set_text(s_status_label, implemented ? status_text_for(display_state->status) : "待命");
-    if (implemented &&
-        s_current_provider == PROVIDER_CODEX &&
-        strcmp(display_state->status, "RUNNING") == 0 &&
+    lv_image_set_src(s_codex_icon, &vibe_stick_provider_codex_icon_40);
+    lv_obj_clear_flag(s_codex_icon, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(s_codex_label, "Codex");
+    lv_obj_set_style_text_color(s_codex_label, lv_color_hex(0xf3f4f6), 0);
+    lv_label_set_text(s_status_label, status_text_for(display_state->status));
+    if (strcmp(display_state->status, "RUNNING") == 0 &&
         display_state->active_conversations > 0) {
         const int badge_width = display_state->active_conversations >= 10 ? 22 : 18;
         char count_text[12];
@@ -861,13 +695,13 @@ static void render_state(void)
         lv_obj_set_width(s_status_label, 52);
         lv_obj_align(s_status_label, LV_ALIGN_TOP_LEFT, 82, 73);
     }
-    set_status_color(provider, status_key);
+    set_status_color(display_state->status);
     set_quota_title(s_quota_5h_title_label, "5H", quota_stale);
     set_quota_title(s_quota_7d_title_label, "7D", quota_stale);
     set_quota_label(s_quota_5h_bar, s_quota_5h_label, display_state->quota_5h,
-                    q5_valid, provider->accent_color);
+                    q5_valid, s_codex_accent_color);
     set_quota_label(s_quota_7d_bar, s_quota_7d_label, display_state->quota_7d,
-                    q7_valid, provider->accent_color);
+                    q7_valid, s_codex_accent_color);
     lv_label_set_text(s_quota_status_label, "");
     lv_obj_add_flag(s_quota_status_label, LV_OBJ_FLAG_HIDDEN);
     lvgl_unlock();
@@ -1041,8 +875,8 @@ static void maybe_handle_alert(void)
         return;
     }
     remember_alert_sound_baseline(s_state.alert_event_id, s_state.alert_type);
-    ESP_LOGI(TAG, "alert type=%s project=%s message=%s",
-             s_state.alert_type, s_state.project, s_state.alert_message);
+    ESP_LOGI(TAG, "alert type=%s message=%s",
+             s_state.alert_type, s_state.alert_message);
 }
 
 static void finish_recording_overlay(void)
@@ -1225,7 +1059,7 @@ static bool json_percent_value(cJSON *item, int *value)
     return true;
 }
 
-static void parse_provider_fields(cJSON *source, provider_display_state_t *target)
+static void parse_codex_fields(cJSON *source, codex_display_state_t *target)
 {
     copy_json_string(source, "status", target->status, sizeof(target->status));
     copy_json_string(source, "project", target->project, sizeof(target->project));
@@ -1255,37 +1089,10 @@ static void parse_provider_fields(cJSON *source, provider_display_state_t *targe
     target->quota_stale = cJSON_IsBool(stale) ? cJSON_IsTrue(stale) : false;
 }
 
-static void parse_provider_json(cJSON *state_root, cJSON *provider)
-{
-    char provider_key[16] = "";
-    copy_json_string(provider, "id", provider_key, sizeof(provider_key));
-    if (provider_key[0] == '\0') {
-        copy_json_string(state_root, "active_provider", provider_key, sizeof(provider_key));
-    }
-    agent_provider_t provider_id = s_current_provider;
-    if (provider_key[0] != '\0' && provider_from_key(provider_key, &provider_id)) {
-        if (!s_provider_manually_selected) {
-            s_current_provider = provider_id;
-        }
-    }
-
-    provider_display_state_t *display_state = provider_display_state(provider_id);
-    parse_provider_fields(provider, display_state);
-    ESP_LOGI(TAG, "provider parsed key=%s status=%s active=%d q5=%s%d q7=%s%d stale=%d",
-             provider_config(provider_id)->key,
-             display_state->status,
-             display_state->active_conversations,
-             display_state->quota_5h_valid ? "" : "invalid:",
-             display_state->quota_5h,
-             display_state->quota_7d_valid ? "" : "invalid:",
-             display_state->quota_7d,
-             display_state->quota_stale);
-}
-
 static void parse_codex_json(cJSON *codex)
 {
-    provider_display_state_t *display_state = provider_display_state(PROVIDER_CODEX);
-    parse_provider_fields(codex, display_state);
+    codex_display_state_t *display_state = &s_codex_state;
+    parse_codex_fields(codex, display_state);
     ESP_LOGI(TAG, "codex parsed status=%s active=%d q5=%s%d q7=%s%d stale=%d",
              display_state->status,
              display_state->active_conversations,
@@ -1307,13 +1114,8 @@ static bool state_json_has_core_fields(cJSON *state_root)
     if (!cJSON_IsObject(state_root)) {
         return false;
     }
-    cJSON *provider = cJSON_GetObjectItemCaseSensitive(state_root, "provider");
     cJSON *codex = cJSON_GetObjectItemCaseSensitive(state_root, "codex");
-    return cJSON_IsObject(provider) &&
-           json_has_nonempty_string(provider, "id") &&
-           json_has_nonempty_string(provider, "status") &&
-           json_has_nonempty_string(provider, "project") &&
-           cJSON_IsObject(codex) &&
+    return cJSON_IsObject(codex) &&
            json_has_nonempty_string(codex, "status") &&
            json_has_nonempty_string(codex, "project");
 }
@@ -1330,7 +1132,7 @@ static bool parse_state_json(const char *json)
         state_root = wrapped_state;
     }
     if (!state_json_has_core_fields(state_root)) {
-        ESP_LOGW(TAG, "state response missing required provider/codex fields");
+        ESP_LOGW(TAG, "state response missing required codex fields");
         cJSON_Delete(root);
         return false;
     }
@@ -1341,20 +1143,8 @@ static bool parse_state_json(const char *json)
     s_state.wifi = cJSON_IsBool(wifi) ? cJSON_IsTrue(wifi) : s_state.wifi;
     s_state.ble = cJSON_IsBool(ble) ? cJSON_IsTrue(ble) : s_state.ble;
 
-    cJSON *provider = cJSON_GetObjectItemCaseSensitive(state_root, "provider");
     cJSON *codex = cJSON_GetObjectItemCaseSensitive(state_root, "codex");
-    if (cJSON_IsObject(provider)) {
-        parse_provider_json(state_root, provider);
-    } else {
-        char active_provider[16] = "";
-        copy_json_string(state_root, "active_provider", active_provider, sizeof(active_provider));
-        if (active_provider[0] != '\0' && !s_provider_manually_selected) {
-            set_current_provider_from_key(active_provider);
-        }
-    }
-    if (cJSON_IsObject(codex)) {
-        parse_codex_json(codex);
-    }
+    parse_codex_json(codex);
 
     cJSON *alert = cJSON_GetObjectItemCaseSensitive(state_root, "alert");
     if (cJSON_IsObject(alert)) {
@@ -1412,8 +1202,7 @@ static void poll_state(void)
     char response[HTTP_JSON_RESPONSE_CAPACITY] = {0};
     esp_err_t err = http_request("GET", VIBE_STICK_STATE_PATH, NULL, response, sizeof(response));
     if (err != ESP_OK || response[0] == '\0' || !parse_state_json(response)) {
-        provider_display_state_t *display_state = current_provider_display_state();
-        strlcpy(display_state->status, "OFFLINE", sizeof(display_state->status));
+        strlcpy(s_codex_state.status, "OFFLINE", sizeof(s_codex_state.status));
         s_state.wifi = s_wifi_connected;
         render_state();
         return;
@@ -1809,13 +1598,6 @@ static void button_double_click_cb(void *button_handle, void *usr_data)
     queue_event(VIBE_STICK_EVENT_DOUBLE_CLICK);
 }
 
-static void side_button_single_click_cb(void *button_handle, void *usr_data)
-{
-    (void)button_handle;
-    (void)usr_data;
-    queue_event(VIBE_STICK_EVENT_PROVIDER_NEXT);
-}
-
 static void button_long_start_cb(void *button_handle, void *usr_data)
 {
     (void)button_handle;
@@ -1838,7 +1620,6 @@ static void button_up_cb(void *button_handle, void *usr_data)
 static esp_err_t init_button(void)
 {
     button_handle_t button = NULL;
-    button_handle_t side_button = NULL;
     const button_config_t button_config = {0};
     const button_gpio_config_t gpio_config = {
         .gpio_num = PIN_BUTTON_FRONT,
@@ -1859,16 +1640,6 @@ static esp_err_t init_button(void)
                         TAG, "button long");
     ESP_RETURN_ON_ERROR(iot_button_register_cb(button, BUTTON_PRESS_UP, NULL, button_up_cb, NULL),
                         TAG, "button up");
-
-    const button_gpio_config_t side_gpio_config = {
-        .gpio_num = PIN_BUTTON_SIDE,
-        .active_level = 0,
-        .enable_power_save = false,
-    };
-    ESP_RETURN_ON_ERROR(iot_button_new_gpio_device(&button_config, &side_gpio_config, &side_button), TAG, "side button");
-    ESP_RETURN_ON_ERROR(iot_button_register_cb(side_button, BUTTON_SINGLE_CLICK, NULL,
-                                               side_button_single_click_cb, NULL),
-                        TAG, "side button single");
     return ESP_OK;
 }
 
@@ -1938,9 +1709,6 @@ static void app_task(void *arg)
             if (atomic_exchange(&s_long_stop_pending, false)) {
                 handle_recording_stop();
             }
-            break;
-        case VIBE_STICK_EVENT_PROVIDER_NEXT:
-            switch_provider();
             break;
         }
     }

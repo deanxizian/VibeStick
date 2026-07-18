@@ -5,6 +5,17 @@ MODE="${1:-run}"
 APP_NAME="VibeStickSetup"
 BUNDLE_ID="com.vibestick.setup"
 MIN_SYSTEM_VERSION="14.0"
+APP_VERSION="${VIBE_STICK_APP_VERSION:-0.1.5}"
+APP_BUILD_VERSION="${VIBE_STICK_APP_BUILD_VERSION:-1}"
+
+if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "VIBE_STICK_APP_VERSION must use semantic version format, for example 0.1.5." >&2
+  exit 2
+fi
+if [[ ! "$APP_BUILD_VERSION" =~ ^[1-9][0-9]*$ ]]; then
+  echo "VIBE_STICK_APP_BUILD_VERSION must be a positive integer." >&2
+  exit 2
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PACKAGE_DIR="$ROOT_DIR/app/macos"
@@ -31,13 +42,29 @@ if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
   fi
 fi
 
-swift build --package-path "$PACKAGE_DIR"
-BUILD_DIR="$(swift build --package-path "$PACKAGE_DIR" --show-bin-path)"
-BUILD_BINARY="$BUILD_DIR/$APP_NAME"
+if [[ "$MODE" == "--package" || "$MODE" == "package" ]]; then
+  ARM64_TRIPLE="arm64-apple-macosx${MIN_SYSTEM_VERSION}"
+  X86_64_TRIPLE="x86_64-apple-macosx${MIN_SYSTEM_VERSION}"
+  swift build --package-path "$PACKAGE_DIR" --configuration release --triple "$ARM64_TRIPLE"
+  swift build --package-path "$PACKAGE_DIR" --configuration release --triple "$X86_64_TRIPLE"
+  ARM64_BUILD_DIR="$(swift build --package-path "$PACKAGE_DIR" --configuration release --triple "$ARM64_TRIPLE" --show-bin-path)"
+  X86_64_BUILD_DIR="$(swift build --package-path "$PACKAGE_DIR" --configuration release --triple "$X86_64_TRIPLE" --show-bin-path)"
+else
+  swift build --package-path "$PACKAGE_DIR"
+  BUILD_DIR="$(swift build --package-path "$PACKAGE_DIR" --show-bin-path)"
+  BUILD_BINARY="$BUILD_DIR/$APP_NAME"
+fi
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$PROJECT_TEMPLATE"
-cp "$BUILD_BINARY" "$APP_BINARY"
+if [[ "$MODE" == "--package" || "$MODE" == "package" ]]; then
+  /usr/bin/lipo -create \
+    "$ARM64_BUILD_DIR/$APP_NAME" \
+    "$X86_64_BUILD_DIR/$APP_NAME" \
+    -output "$APP_BINARY"
+else
+  cp "$BUILD_BINARY" "$APP_BINARY"
+fi
 chmod +x "$APP_BINARY"
 
 # Bundle a clean, writable-on-first-run project template. Never copy the
@@ -121,9 +148,9 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>$APP_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$APP_BUILD_VERSION</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>
@@ -146,13 +173,23 @@ SIGNING_IDENTITY="${VIBE_STICK_SIGNING_IDENTITY:-}"
 if [[ -z "$SIGNING_IDENTITY" ]]; then
   SIGNING_IDENTITY="$(
     /usr/bin/security find-identity -v -p codesigning 2>/dev/null \
+      | /usr/bin/awk '/Developer ID Application:/ { print $2; exit }'
+  )"
+fi
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+  SIGNING_IDENTITY="$(
+    /usr/bin/security find-identity -v -p codesigning 2>/dev/null \
       | /usr/bin/awk '/Apple Development:/ { print $2; exit }'
   )"
 fi
 if [[ -z "$SIGNING_IDENTITY" ]]; then
   SIGNING_IDENTITY="-"
 fi
-/usr/bin/codesign --force --sign "$SIGNING_IDENTITY" "$APP_BUNDLE" >/dev/null
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+  /usr/bin/codesign --force --options runtime --sign - "$APP_BUNDLE" >/dev/null
+else
+  /usr/bin/codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$APP_BUNDLE" >/dev/null
+fi
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
@@ -179,8 +216,12 @@ case "$MODE" in
     pgrep -x "$APP_NAME" >/dev/null
     /usr/bin/codesign --verify --strict "$APP_BUNDLE"
     ;;
+  --package|package)
+    /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
+    /usr/bin/file "$APP_BINARY"
+    ;;
   *)
-    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2
+    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|--package]" >&2
     exit 2
     ;;
 esac

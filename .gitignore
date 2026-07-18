@@ -27,7 +27,6 @@ firmware/sticks3/sdkconfig
 firmware/sticks3/sdkconfig.old
 firmware/sticks3/include/vibe_stick_secrets.h
 bridge/.vibestick-state.json
-docs/CLAUDE_PROVIDER_PLAN.md
 recordings/
 Recordings/
 bridge/recordings/

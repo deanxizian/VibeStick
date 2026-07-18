@@ -1,4 +1,6 @@
-# VibeStick macOS Apps
+# VibeStick macOS Developer Notes
+
+This document covers development and delivery details for the macOS apps. For normal installation, see the root [README](../../README.md).
 
 This directory contains two separate macOS components:
 
@@ -13,7 +15,9 @@ VibeStickSetup is a SwiftPM app that requires macOS 14 or newer:
 ./script/build_and_run.sh
 ```
 
-The script builds `app/macos/Package.swift`, embeds a clean VibeStick project template, and stages the app at `dist/VibeStickSetup.app`. It uses the first available Apple Development identity for a stable local signature, falling back to an ad-hoc signature when no identity exists, then opens the app. Other supported modes are `--debug`, `--logs`, `--telemetry`, and `--verify`.
+The script builds `app/macos/Package.swift`, embeds a clean VibeStick project template, and stages the app at `dist/VibeStickSetup.app`. It prefers a Developer ID Application identity, then Apple Development, and falls back to an ad-hoc signature when neither exists. Other supported modes are `--debug`, `--logs`, `--telemetry`, and `--verify`.
+
+For a release artifact, use `./script/build_and_run.sh --package`. It creates a hardened-runtime, universal (`arm64` + `x86_64`) release build without opening the app and verifies the resulting bundle. A Developer ID Application certificate and notarization credentials are still required before it can be described as a trusted public macOS distribution.
 
 Run its tests with:
 

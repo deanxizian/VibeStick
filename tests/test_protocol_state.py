@@ -1,7 +1,7 @@
 import unittest
 import json
 
-from vibe_stick.protocol.state import AgentStatus, ProviderState, default_state, state_from_dict
+from vibe_stick.protocol.state import AgentStatus, default_state, state_from_dict
 
 
 class ProtocolStateTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class ProtocolStateTests(unittest.TestCase):
 
         self.assertIsNone(state.to_jsonable()["battery"])
 
-    def test_legacy_codex_block_populates_generic_provider(self) -> None:
+    def test_codex_block_populates_generic_provider(self) -> None:
         state = state_from_dict(
             {
                 "codex": {
@@ -40,26 +40,29 @@ class ProtocolStateTests(unittest.TestCase):
         self.assertEqual(payload["codex"]["status"], "RUNNING")
         self.assertEqual(payload["codex"]["active_conversations"], 2)
 
-    def test_generic_provider_block_serializes_status_string(self) -> None:
-        state = default_state()
-        state.active_provider = "claude"
-        state.provider = ProviderState(
-            id="claude",
-            display_name="Claude",
-            implemented=True,
-            status=AgentStatus.ERROR,
-            project="VibeStick",
-            quota_5h_remaining=None,
-            quota_7d_remaining=None,
-            quota_updated_at="",
-            quota_stale=False,
+    def test_unsupported_saved_provider_is_normalized_to_codex(self) -> None:
+        state = state_from_dict(
+            {
+                "active_provider": "unsupported",
+                "provider": {
+                    "id": "unsupported",
+                    "display_name": "Unsupported",
+                    "status": "ERROR",
+                    "project": "Other",
+                },
+                "codex": {
+                    "status": "RUNNING",
+                    "project": "VibeStick",
+                },
+            }
         )
 
         payload = state.to_jsonable()
 
-        self.assertEqual(payload["active_provider"], "claude")
-        self.assertEqual(payload["provider"]["id"], "claude")
-        self.assertEqual(payload["provider"]["status"], "ERROR")
+        self.assertEqual(payload["active_provider"], "codex")
+        self.assertEqual(payload["provider"]["id"], "codex")
+        self.assertEqual(payload["provider"]["display_name"], "Codex")
+        self.assertEqual(payload["provider"]["status"], "RUNNING")
 
     def test_non_object_state_returns_defaults(self) -> None:
         for payload in ([], None, "invalid"):
@@ -85,15 +88,12 @@ class ProtocolStateTests(unittest.TestCase):
         self.assertEqual(state.codex.status, AgentStatus.UNKNOWN)
         self.assertIsNone(state.codex.quota_5h_remaining)
         self.assertEqual(state.codex.quota_7d_remaining, 100)
-        self.assertEqual(state.provider.active_conversations, 0)
+        self.assertEqual(state.provider.active_conversations, 99)
         self.assertEqual(state.codex.active_conversations, 99)
         self.assertEqual(state.alert.type.value, "NONE")
 
     def test_device_state_has_bounded_utf8_fields_and_payload(self) -> None:
         state = default_state()
-        state.active_provider = "供" * 1000
-        state.provider.id = "供" * 1000
-        state.provider.display_name = "供" * 1000
         state.provider.project = "供" * 1000
         state.provider.quota_updated_at = "供" * 1000
         state.codex.project = "供" * 1000
