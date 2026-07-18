@@ -277,6 +277,35 @@ class CodexProviderTests(unittest.TestCase):
         self.assertEqual(observation.status, AgentStatus.RUNNING)
         self.assertEqual(observation.active_conversations, 2)
 
+    def test_counts_each_recent_session_when_task_start_fell_out_of_tail(self) -> None:
+        now = datetime.now(timezone.utc)
+
+        observation = self._observe_sessions(
+            {
+                "visible-lifecycle": [
+                    self._event(
+                        now - timedelta(seconds=3),
+                        "task_started",
+                        turn_id="turn-visible",
+                    ),
+                ],
+                "truncated-lifecycle": [
+                    self._event(now - timedelta(seconds=2), "custom_tool_call"),
+                    self._event(now - timedelta(seconds=1), "token_count"),
+                ],
+                "completed-without-start": [
+                    self._event(
+                        now - timedelta(milliseconds=500),
+                        "task_complete",
+                        turn_id="turn-complete",
+                    ),
+                ],
+            }
+        )
+
+        self.assertEqual(observation.status, AgentStatus.RUNNING)
+        self.assertEqual(observation.active_conversations, 2)
+
     def test_all_user_conversations_are_observed(self) -> None:
         now = datetime.now(timezone.utc)
 

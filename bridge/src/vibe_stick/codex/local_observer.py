@@ -119,22 +119,8 @@ def observe_codex(project_root: Path) -> LocalCodexObservation:
 
     quota_snapshot = _quota_at_time(latest_quota, now)
     active_conversations = sum(
-        summary.turn_lifecycle is not None
-        and summary.turn_lifecycle[1] == "task_started"
-        and summary.latest_event is not None
-        and now - summary.latest_event[0] <= RUNNING_ACTIVITY_WINDOW
-        for summary in summaries
+        _summary_has_active_turn(summary, now) for summary in summaries
     )
-    if (
-        active_conversations == 0
-        and latest_event is not None
-        and latest_event[1] not in TURN_TERMINAL_TYPES
-        and now - latest_event[0] <= RUNNING_ACTIVITY_WINDOW
-    ):
-        # Older Codex logs do not always include task lifecycle events. Keep
-        # the existing recent-activity fallback, but make it explicit in the
-        # count so RUNNING and the number shown on the device cannot disagree.
-        active_conversations = 1
     if not codex_online:
         status = AgentStatus.OFFLINE
         active_conversations = 0
@@ -277,6 +263,24 @@ def _latest_summary(
     if not candidates:
         return None
     return max(candidates, key=lambda summary: getattr(summary, attribute)[0])
+
+
+def _summary_has_active_turn(summary: _CodexSessionSummary, now: datetime) -> bool:
+    latest_event = summary.latest_event
+    if (
+        latest_event is None
+        or now - latest_event[0] > RUNNING_ACTIVITY_WINDOW
+    ):
+        return False
+
+    if summary.turn_lifecycle is not None:
+        return summary.turn_lifecycle[1] == "task_started"
+
+    # A long-running conversation can append enough tool output to push its
+    # task_started event outside the bounded JSONL tail. Apply the recent-
+    # activity fallback to each root session instead of only once globally,
+    # otherwise one visible lifecycle masks every other active conversation.
+    return latest_event[1] not in TURN_TERMINAL_TYPES
 
 
 def _quota_at_time(
