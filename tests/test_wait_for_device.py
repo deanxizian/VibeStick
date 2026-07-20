@@ -71,11 +71,11 @@ def _health_payload(*, fresh: bool) -> dict[str, object]:
     return {
         "ok": True,
         "bridge_name": "vibestick-bridge",
-        "bridge_version": "0.1.6",
+        "bridge_version": "0.1.7",
         "device_last_seen_at": seen_at,
         "device_last_seen_age_seconds": age,
         "device_firmware_name": "vibestick",
-        "device_firmware_version": "0.1.6",
+        "device_firmware_version": "0.1.7",
         "device_firmware_transport": "wifi",
         "device_firmware_build_date": "Jul 17 2026 10:20:30",
         "device_deployment_nonce": DEPLOYMENT_NONCE,

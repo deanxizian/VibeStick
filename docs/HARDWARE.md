@@ -2,7 +2,7 @@
 
 ## Supported Device
 
-VibeStick v0.1.6 targets M5Stack StickS3.
+VibeStick v0.1.7 targets M5Stack StickS3.
 
 The project does not currently claim support for other devices because the UI layout, front button behavior, microphone path, speaker path, PMIC battery reads, and screen size are all written around StickS3.
 
@@ -42,7 +42,10 @@ Edit:
 #define VIBE_STICK_BRIDGE_HOST "192.168.1.10"
 #define VIBE_STICK_BRIDGE_PORT 8765
 #define VIBE_STICK_BRIDGE_TOKEN "paste-generated-token-here"
+#define VIBE_STICK_SPEAKER_VOLUME 85
 ```
+
+`VIBE_STICK_SPEAKER_VOLUME` accepts `0`–`100` and controls the generated completion, approval, and error tones. VibeStick Setup writes this value automatically when it builds and flashes the firmware.
 
 Do not commit `vibe_stick_secrets.h`.
 

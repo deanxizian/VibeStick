@@ -24,6 +24,21 @@ final class ConfigurationValidatorTests: XCTestCase {
         XCTAssertTrue(ConfigurationValidator.issues(for: configuration).contains { $0.field == .wifiSSID })
     }
 
+    func testRejectsSpeakerVolumeOutsideCodecRange() {
+        var configuration = validConfiguration()
+        configuration.speakerVolume = -1
+        XCTAssertTrue(ConfigurationValidator.issues(for: configuration).contains { $0.field == .speakerVolume })
+
+        configuration.speakerVolume = 101
+        XCTAssertTrue(ConfigurationValidator.issues(for: configuration).contains { $0.field == .speakerVolume })
+
+        configuration.speakerVolume = 0
+        XCTAssertFalse(ConfigurationValidator.issues(for: configuration).contains { $0.field == .speakerVolume })
+
+        configuration.speakerVolume = 100
+        XCTAssertFalse(ConfigurationValidator.issues(for: configuration).contains { $0.field == .speakerVolume })
+    }
+
     func testAllowsExistingSecretsToRemainUntouched() {
         var configuration = validConfiguration()
         configuration.wifiPassword = ""

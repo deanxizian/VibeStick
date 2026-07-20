@@ -170,6 +170,12 @@ struct InstallSetupStepView: View {
                 )
                 Divider()
                 ReadyRow(
+                    title: "扬声器音量",
+                    detail: "\(store.configuration.speakerVolume)%",
+                    ready: !store.issues.contains { $0.field == .speakerVolume }
+                )
+                Divider()
+                ReadyRow(
                     title: "StickS3",
                     detail: installModeDetail,
                     ready: store.installModeRequirementSatisfied

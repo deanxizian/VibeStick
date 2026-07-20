@@ -51,6 +51,8 @@ final class RepositoryConfigurationStoreTests: XCTestCase {
         )
         XCTAssertTrue(env.contains("VIBE_STICK_ASR_API_KEY='api-secret'"))
         XCTAssertTrue(header.contains("#define VIBE_STICK_WIFI_PASSWORD \"wifi'password\""))
+        XCTAssertTrue(header.contains("#define VIBE_STICK_SPEAKER_VOLUME 65"))
+        XCTAssertFalse(header.contains("#define VIBE_STICK_SPEAKER_VOLUME \"65\""))
         XCTAssertFalse(header.contains("api-secret"))
         XCTAssertEqual(fileMode(temporaryRoot.appendingPathComponent(".env")), 0o600)
         XCTAssertEqual(fileMode(temporaryRoot.appendingPathComponent("firmware/sticks3/include/vibe_stick_secrets.h")), 0o600)
@@ -63,6 +65,7 @@ final class RepositoryConfigurationStoreTests: XCTestCase {
 
         XCTAssertEqual(loaded.wifiSSID, "Home WiFi")
         XCTAssertEqual(loaded.bridgeHost, "192.168.50.5")
+        XCTAssertEqual(loaded.speakerVolume, 65)
         XCTAssertEqual(loaded.wifiPassword, "")
         XCTAssertEqual(loaded.asrAPIKey, "")
         XCTAssertTrue(loaded.hasStoredWiFiPassword)
@@ -76,6 +79,7 @@ final class RepositoryConfigurationStoreTests: XCTestCase {
 
         XCTAssertEqual(loaded.wifiSSID, "")
         XCTAssertEqual(loaded.bridgeHost, "")
+        XCTAssertEqual(loaded.speakerVolume, SetupConfiguration.defaultSpeakerVolume)
         XCTAssertFalse(loaded.hasStoredWiFiPassword)
         XCTAssertFalse(loaded.hasStoredAPIKey)
     }
@@ -193,6 +197,7 @@ final class RepositoryConfigurationStoreTests: XCTestCase {
             wifiSSID: "Home WiFi",
             wifiPassword: "wifi'password",
             bridgeHost: "192.168.50.5",
+            speakerVolume: 65,
             asrProvider: .siliconFlow,
             asrBaseURL: "https://api.siliconflow.cn/v1",
             asrAPIKey: "api-secret",

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "vibe_board.h"
+#include "vibe_stick_config.h"
 #include "driver/i2s_std.h"
 #include "esp_check.h"
 #include "esp_codec_dev.h"
@@ -29,7 +30,6 @@
 #define VIBE_STICK_SOUND_VOLUME 0.40f
 #define VIBE_STICK_SOUND_FRAME_SAMPLES 160
 #define VIBE_STICK_SOUND_FADE_MS 8
-#define VIBE_STICK_SOUND_OUTPUT_VOLUME 85
 #define VIBE_STICK_TWO_PI 6.28318530717958647692f
 
 static const char *TAG = "vibe_audio";
@@ -158,7 +158,7 @@ static esp_err_t init_codec(esp_codec_dev_type_t dev_type, esp_codec_dec_work_mo
                             ESP_FAIL, TAG, "mic gain");
     }
     if (dev_type & ESP_CODEC_DEV_TYPE_OUT) {
-        ESP_RETURN_ON_FALSE(esp_codec_dev_set_out_vol(s_codec, VIBE_STICK_SOUND_OUTPUT_VOLUME) == ESP_CODEC_DEV_OK,
+        ESP_RETURN_ON_FALSE(esp_codec_dev_set_out_vol(s_codec, VIBE_STICK_SPEAKER_VOLUME) == ESP_CODEC_DEV_OK,
                             ESP_FAIL, TAG, "speaker volume");
         ESP_RETURN_ON_FALSE(esp_codec_dev_set_out_mute(s_codec, false) == ESP_CODEC_DEV_OK,
                             ESP_FAIL, TAG, "speaker unmute");

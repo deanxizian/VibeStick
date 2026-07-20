@@ -19,7 +19,7 @@ You need:
 - A 2.4 GHz Wi-Fi name and password.
 - An optional ASR API key. [SiliconFlow](https://cloud.siliconflow.cn) is recommended; other OpenAI-compatible services are supported.
 
-The recommended route is the [VibeStickSetup v0.1.6 universal macOS installer](https://github.com/deanxizian/VibeStick/releases/download/v0.1.6/VibeStickSetup-v0.1.6-macos-universal.zip). It supports both Apple Silicon and Intel. Unzip it and open the app. The installer is signed with hardened runtime but is not Apple-notarized yet; if macOS blocks the first launch, right-click the app and choose Open.
+The recommended route is the [VibeStickSetup v0.1.7 universal macOS installer](https://github.com/deanxizian/VibeStick/releases/download/v0.1.7/VibeStickSetup-v0.1.7-macos-universal.zip). It supports both Apple Silicon and Intel. Unzip it and open the app. The installer is signed with hardened runtime but is not Apple-notarized yet; if macOS blocks the first launch, right-click the app and choose Open.
 
 You can also build it from source:
 
@@ -33,7 +33,7 @@ The installer opens automatically and remains at `dist/VibeStickSetup.app`. You 
 
 Setup has three steps:
 
-1. Enter Wi-Fi details and optionally configure and test an ASR API.
+1. Enter Wi-Fi details, adjust the StickS3 alert volume, and optionally configure and test an ASR API.
 2. Connect the StickS3 and follow the prompt to enter install mode.
 3. Confirm installation; the app prepares components, flashes firmware, installs Mac services, and verifies connectivity.
 
@@ -45,7 +45,8 @@ The first installation downloads about 1 GB of ESP-IDF components. Keep the Mac 
 - For 30 seconds after a successful recording, single-click the blue button to send the current draft.
 - For 30 seconds after a successful recording, double-click the blue button to pause the current Codex task.
 - Single-click the large right-side button to switch between the Codex dashboard and the Roxy pet view. Roxy's animation follows Codex status.
-- Reopen the installer to change Wi-Fi or ASR settings, or to reflash the device.
+- Alert volume is adjustable from 0–100% in the installer and takes effect after reinstalling and reflashing.
+- Reopen the installer to change Wi-Fi, alert-volume, or ASR settings, or to reflash the device.
 
 Bridge and HUD start automatically at login. The Mac and StickS3 must be on the same LAN.
 

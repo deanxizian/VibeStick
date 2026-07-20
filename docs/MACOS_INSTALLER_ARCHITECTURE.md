@@ -10,13 +10,13 @@ The current SwiftUI app embeds a minimal clean project template and installs it 
 writable `~/Library/Application Support/VibeStick/InstallerProject` workspace. It never scans the
 app bundle's parent checkout, and template updates preserve the workspace's `.env` and firmware
 secrets. Its normal UI is a single three-step
-wizard—network and optional voice input, device connection, then automatic installation. Serial
+wizard—network, alert volume, and optional voice input, device connection, then automatic installation. Serial
 metadata, model endpoints, diagnostics, and raw logs are available only as advanced or technical
 details.
 
 Under that simple flow it:
 
-1. Validate and atomically save Wi‑Fi, Bridge, and ASR configuration, then verify the API key and model with a one-second silent transcription request.
+1. Validate and atomically save Wi‑Fi, Bridge, StickS3 alert-volume, and ASR configuration, then verify the API key and model with a one-second silent transcription request.
 2. Keep reusable secrets in a versioned macOS login-Keychain namespace while writing the runtime files required by the existing firmware and Bridge. Startup reads disallow authentication UI, and local packaging prefers an available Apple Development identity so rebuilds keep a stable code-signing identity. A release may opt into the Data Protection backend with the proper entitlement.
 3. Discover serial devices and stable USB identity through IOKit.
 4. Install a pinned, checksum-verified user-local Python 3.12 runtime and ESP-IDF 5.5.1 when needed; if Apple Command Line Tools are absent, open the macOS system installer and keep checking until they are available.

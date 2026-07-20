@@ -39,10 +39,13 @@ public enum ASRProvider: String, CaseIterable, Codable, Identifiable, Sendable {
 }
 
 public struct SetupConfiguration: Equatable, Sendable {
+    public static let defaultSpeakerVolume = 85
+
     public var wifiSSID: String
     public var wifiPassword: String
     public var hasStoredWiFiPassword: Bool
     public var bridgeHost: String
+    public var speakerVolume: Int
     public var asrProvider: ASRProvider
     public var asrBaseURL: String
     public var asrAPIKey: String
@@ -55,6 +58,7 @@ public struct SetupConfiguration: Equatable, Sendable {
         wifiPassword: String = "",
         hasStoredWiFiPassword: Bool = false,
         bridgeHost: String = "",
+        speakerVolume: Int = SetupConfiguration.defaultSpeakerVolume,
         asrProvider: ASRProvider = .siliconFlow,
         asrBaseURL: String = ASRProvider.siliconFlow.defaultBaseURL,
         asrAPIKey: String = "",
@@ -66,6 +70,7 @@ public struct SetupConfiguration: Equatable, Sendable {
         self.wifiPassword = wifiPassword
         self.hasStoredWiFiPassword = hasStoredWiFiPassword
         self.bridgeHost = bridgeHost
+        self.speakerVolume = speakerVolume
         self.asrProvider = asrProvider
         self.asrBaseURL = asrBaseURL
         self.asrAPIKey = asrAPIKey
@@ -94,6 +99,7 @@ public enum ConfigurationField: String, Hashable, Sendable {
     case wifiSSID
     case wifiPassword
     case bridgeHost
+    case speakerVolume
     case asrBaseURL
     case asrAPIKey
     case asrModel
@@ -139,6 +145,10 @@ public enum ConfigurationValidator {
             result.append(.init(field: .bridgeHost, message: "请选择或填写 Mac 的局域网地址"))
         } else if containsControlCharacter(configuration.bridgeHost) || !isValidBridgeHost(host) {
             result.append(.init(field: .bridgeHost, message: "请输入 IPv4 或主机名，不要包含 http://、端口或路径"))
+        }
+
+        if !(0...100).contains(configuration.speakerVolume) {
+            result.append(.init(field: .speakerVolume, message: "StickS3 扬声器音量必须在 0–100 之间"))
         }
 
         if configuration.asrProvider != .disabled {

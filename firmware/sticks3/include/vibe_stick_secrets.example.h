@@ -9,3 +9,4 @@
 #define VIBE_STICK_BRIDGE_PORT 8765
 #define VIBE_STICK_BRIDGE_TOKEN "paste-generated-token-here"
 #define VIBE_STICK_DEPLOYMENT_NONCE ""
+#define VIBE_STICK_SPEAKER_VOLUME 85

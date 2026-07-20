@@ -46,7 +46,8 @@
 #define LVGL_DRAW_BUF_LINES 24
 #define LVGL_TICK_PERIOD_MS 10
 #define LVGL_TASK_STACK_SIZE 8192
-#define BATTERY_FILL_MAX_WIDTH 20
+#define BATTERY_FILL_CHARGING_MAX_WIDTH 28
+#define BATTERY_FILL_NORMAL_MAX_WIDTH 26
 #define POWER_STATE_POLL_MS 2000
 #define ALERT_SOUND_PENDING_CAPACITY 32
 #define HTTP_JSON_RESPONSE_CAPACITY 2048
@@ -417,7 +418,7 @@ static void create_codex_icon(lv_obj_t *parent)
 {
     s_codex_icon = lv_image_create(parent);
     lv_image_set_src(s_codex_icon, &vibe_stick_provider_codex_icon_40);
-    lv_obj_align(s_codex_icon, LV_ALIGN_TOP_LEFT, 14, 52);
+    lv_obj_align(s_codex_icon, LV_ALIGN_TOP_LEFT, 7, 52);
 }
 
 static const char *status_text_for(const char *status)
@@ -553,10 +554,11 @@ static void create_pet_view(lv_obj_t *screen)
     lv_obj_align(status_card, LV_ALIGN_TOP_MID, 0, 174);
     s_pet_status_dot = make_plain_obj(status_card, 7, 7, lv_color_hex(0x9aa0aa),
                                       LV_OPA_COVER, LV_RADIUS_CIRCLE);
-    lv_obj_align(s_pet_status_dot, LV_ALIGN_LEFT_MID, 9, 0);
     s_pet_status_label = make_label(status_card, "待命", FONT_CN,
-                                    lv_color_hex(0xf3f4f6), 68, LV_TEXT_ALIGN_LEFT);
-    lv_obj_align(s_pet_status_label, LV_ALIGN_LEFT_MID, 24, 0);
+                                    lv_color_hex(0xf3f4f6), 48, LV_TEXT_ALIGN_CENTER);
+    lv_obj_align(s_pet_status_label, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_align_to(s_pet_status_dot, s_pet_status_label,
+                    LV_ALIGN_OUT_LEFT_MID, -8, 0);
     s_pet_active_count_label = make_label(status_card, "", &lv_font_montserrat_12,
                                           lv_color_hex(0x9aa0aa), 28, LV_TEXT_ALIGN_RIGHT);
     lv_obj_align(s_pet_active_count_label, LV_ALIGN_RIGHT_MID, -9, 0);
@@ -585,19 +587,26 @@ static void set_battery_ui(int battery_value, bool battery_valid,
     }
     lv_label_set_text(s_battery_label, battery);
 
-    int fill_width = battery_value > 0 ? (battery_value * 20) / 100 : 0;
+    const bool external_power = charging || usb_powered;
+    const int fill_max_width = external_power
+        ? BATTERY_FILL_CHARGING_MAX_WIDTH
+        : BATTERY_FILL_NORMAL_MAX_WIDTH;
+    int fill_width = battery_value > 0
+        ? (battery_value * fill_max_width) / 100
+        : 0;
     if (fill_width < 1 && battery_value > 0) {
         fill_width = 1;
     }
 
-    const bool external_power = charging || usb_powered;
     const lv_color_t normal_color = lv_color_hex(0xf3f4f6);
     const lv_color_t charging_color = lv_color_hex(0x32d583);
 
     lv_obj_set_style_border_color(s_battery_icon, normal_color, 0);
     lv_obj_set_style_bg_color(s_battery_fill, external_power ? charging_color : normal_color, 0);
     lv_obj_set_style_bg_color(s_battery_cap, normal_color, 0);
-    lv_obj_set_width(s_battery_fill, fill_width);
+    lv_obj_set_size(s_battery_fill, fill_width, external_power ? 14 : 12);
+    lv_obj_set_style_radius(s_battery_fill, external_power ? 3 : 2, 0);
+    lv_obj_align(s_battery_fill, LV_ALIGN_LEFT_MID, external_power ? 0 : 1, 0);
 
     if (s_battery_bolt) {
         if (external_power) {
@@ -652,29 +661,31 @@ static void create_ui(void)
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x050608), 0);
     lv_obj_set_style_pad_all(screen, 0, 0);
 
-    s_wifi_label = make_label(screen, "WiFi", &lv_font_montserrat_10, lv_color_hex(0xf3f4f6), 38, LV_TEXT_ALIGN_LEFT);
-    lv_obj_align(s_wifi_label, LV_ALIGN_TOP_LEFT, 9, 9);
-    s_wifi_status_label = make_label(screen, "OFF", &lv_font_montserrat_10,
-                                     lv_color_hex(0x686e78), 38, LV_TEXT_ALIGN_LEFT);
-    lv_obj_align(s_wifi_status_label, LV_ALIGN_TOP_LEFT, 9, 22);
+    s_wifi_label = make_label(screen, "WiFi", &lv_font_montserrat_12,
+                              lv_color_hex(0xf3f4f6), 44, LV_TEXT_ALIGN_LEFT);
+    lv_obj_align(s_wifi_label, LV_ALIGN_TOP_LEFT, 8, 7);
+    s_wifi_status_label = make_label(screen, "OFF", &lv_font_montserrat_12,
+                                     lv_color_hex(0x686e78), 44, LV_TEXT_ALIGN_LEFT);
+    lv_obj_align(s_wifi_status_label, LV_ALIGN_TOP_LEFT, 8, 23);
 
-    s_battery_label = make_label(screen, "--%", &lv_font_montserrat_10, lv_color_hex(0xf3f4f6), 28, LV_TEXT_ALIGN_RIGHT);
-    lv_obj_align(s_battery_label, LV_ALIGN_TOP_RIGHT, -35, 9);
-    s_battery_icon = make_plain_obj(screen, 26, 13, lv_color_hex(0x000000), LV_OPA_TRANSP, 3);
+    s_battery_label = make_label(screen, "--%", &lv_font_montserrat_12,
+                                 lv_color_hex(0xf3f4f6), 34, LV_TEXT_ALIGN_RIGHT);
+    lv_obj_align(s_battery_label, LV_ALIGN_TOP_RIGHT, -42, 7);
+    s_battery_icon = make_plain_obj(screen, 30, 16, lv_color_hex(0x000000), LV_OPA_TRANSP, 4);
     lv_obj_set_style_border_width(s_battery_icon, 1, 0);
     lv_obj_set_style_border_color(s_battery_icon, lv_color_hex(0xf3f4f6), 0);
-    lv_obj_align(s_battery_icon, LV_ALIGN_TOP_RIGHT, -7, 9);
-    s_battery_fill = make_plain_obj(s_battery_icon, 1, 9, lv_color_hex(0xf3f4f6), LV_OPA_COVER, 2);
+    lv_obj_align(s_battery_icon, LV_ALIGN_TOP_RIGHT, -7, 7);
+    s_battery_fill = make_plain_obj(s_battery_icon, 1, 12, lv_color_hex(0xf3f4f6), LV_OPA_COVER, 2);
     lv_obj_align(s_battery_fill, LV_ALIGN_LEFT_MID, 2, 0);
     s_battery_bolt = lv_line_create(s_battery_icon);
     lv_line_set_points(s_battery_bolt, s_battery_bolt_points,
                        sizeof(s_battery_bolt_points) / sizeof(s_battery_bolt_points[0]));
-    lv_obj_set_style_line_width(s_battery_bolt, 1, 0);
+    lv_obj_set_style_line_width(s_battery_bolt, 2, 0);
     lv_obj_set_style_line_color(s_battery_bolt, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_line_rounded(s_battery_bolt, true, 0);
     lv_obj_align(s_battery_bolt, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(s_battery_bolt, LV_OBJ_FLAG_HIDDEN);
-    s_battery_cap = make_plain_obj(screen, 2, 7, lv_color_hex(0xf3f4f6), LV_OPA_COVER, 1);
+    s_battery_cap = make_plain_obj(screen, 3, 8, lv_color_hex(0xf3f4f6), LV_OPA_COVER, 1);
     lv_obj_align_to(s_battery_cap, s_battery_icon, LV_ALIGN_OUT_RIGHT_MID, 1, 0);
 
     s_dashboard_view = make_plain_obj(screen, LCD_H_RES, LCD_V_RES,
@@ -690,17 +701,17 @@ static void create_ui(void)
     lv_obj_set_style_radius(s_status_dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(s_status_dot, lv_color_hex(0xf3f4f6), 0);
     lv_obj_set_style_bg_opa(s_status_dot, LV_OPA_COVER, 0);
-    lv_obj_align(s_status_dot, LV_ALIGN_TOP_LEFT, 72, 80);
+    lv_obj_align(s_status_dot, LV_ALIGN_TOP_LEFT, 65, 80);
     s_active_count_label = make_label(s_status_dot, "1", &lv_font_montserrat_10,
                                       lv_color_hex(0x050608), 18, LV_TEXT_ALIGN_CENTER);
     lv_obj_align(s_active_count_label, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(s_active_count_label, LV_OBJ_FLAG_HIDDEN);
 
     s_codex_label = make_label(s_dashboard_view, "Codex", &lv_font_montserrat_16, lv_color_hex(0xf3f4f6), 60, LV_TEXT_ALIGN_LEFT);
-    lv_obj_align(s_codex_label, LV_ALIGN_TOP_LEFT, 72, 51);
+    lv_obj_align(s_codex_label, LV_ALIGN_TOP_LEFT, 65, 51);
 
     s_status_label = make_label(s_dashboard_view, "待命", FONT_CN, lv_color_hex(0xf3f4f6), 52, LV_TEXT_ALIGN_LEFT);
-    lv_obj_align(s_status_label, LV_ALIGN_TOP_LEFT, 82, 73);
+    lv_obj_align(s_status_label, LV_ALIGN_TOP_LEFT, 75, 73);
 
     lv_obj_t *quota_wrap = make_plain_obj(s_dashboard_view, LCD_H_RES - 16, 104, lv_color_hex(0x0e1014), LV_OPA_COVER, 8);
     lv_obj_set_style_border_width(quota_wrap, 1, 0);
@@ -845,19 +856,19 @@ static void render_state(void)
         snprintf(count_text, sizeof(count_text), "%d", display_state->active_conversations);
         lv_obj_set_size(s_status_dot, badge_width, 14);
         lv_obj_set_style_radius(s_status_dot, 7, 0);
-        lv_obj_align(s_status_dot, LV_ALIGN_TOP_LEFT, 82 - badge_width, 74);
+        lv_obj_align(s_status_dot, LV_ALIGN_TOP_LEFT, 75 - badge_width, 74);
         lv_obj_set_width(s_active_count_label, badge_width);
         lv_label_set_text(s_active_count_label, count_text);
         lv_obj_clear_flag(s_active_count_label, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_width(s_status_label, 50);
-        lv_obj_align(s_status_label, LV_ALIGN_TOP_LEFT, 85, 73);
+        lv_obj_align(s_status_label, LV_ALIGN_TOP_LEFT, 78, 73);
     } else {
         lv_obj_set_size(s_status_dot, 7, 7);
         lv_obj_set_style_radius(s_status_dot, LV_RADIUS_CIRCLE, 0);
-        lv_obj_align(s_status_dot, LV_ALIGN_TOP_LEFT, 72, 80);
+        lv_obj_align(s_status_dot, LV_ALIGN_TOP_LEFT, 65, 80);
         lv_obj_add_flag(s_active_count_label, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_width(s_status_label, 52);
-        lv_obj_align(s_status_label, LV_ALIGN_TOP_LEFT, 82, 73);
+        lv_obj_align(s_status_label, LV_ALIGN_TOP_LEFT, 75, 73);
     }
     set_status_color(display_state->status);
     set_quota_title(s_quota_5h_title_label, "5H", quota_stale);

@@ -15,6 +15,7 @@ public final class RepositoryConfigurationStore: ConfigurationStoring, @unchecke
         static let bridgeHost = "VIBE_STICK_BRIDGE_HOST"
         static let bridgeToken = "VIBE_STICK_BRIDGE_TOKEN"
         static let deploymentNonce = "VIBE_STICK_DEPLOYMENT_NONCE"
+        static let speakerVolume = "VIBE_STICK_SPEAKER_VOLUME"
         static let asrProvider = "VIBE_STICK_ASR_PROVIDER"
         static let asrBaseURL = "VIBE_STICK_ASR_BASE_URL"
         static let asrAPIKey = "VIBE_STICK_ASR_API_KEY"
@@ -63,6 +64,8 @@ public final class RepositoryConfigurationStore: ConfigurationStoring, @unchecke
             wifiPassword: "",
             hasStoredWiFiPassword: storedWiFi != nil,
             bridgeHost: displayBridgeHost(header[Managed.bridgeHost]),
+            speakerVolume: Int(header[Managed.speakerVolume] ?? "")
+                ?? SetupConfiguration.defaultSpeakerVolume,
             asrProvider: provider,
             asrBaseURL: env[Managed.asrBaseURL] ?? provider.defaultBaseURL,
             asrAPIKey: "",
@@ -136,6 +139,7 @@ public final class RepositoryConfigurationStore: ConfigurationStoring, @unchecke
             Managed.bridgeHost: configuration.bridgeHost,
             Managed.bridgeToken: token,
             Managed.deploymentNonce: deploymentNonce,
+            Managed.speakerVolume: String(configuration.speakerVolume),
         ]
 
         do {
@@ -338,6 +342,8 @@ public final class RepositoryConfigurationStore: ConfigurationStoring, @unchecke
             let literal = String(parts[2]).trimmingCharacters(in: .whitespaces)
             if literal.hasPrefix("\"") {
                 result[key] = try decodeCString(literal)
+            } else if Int(literal) != nil {
+                result[key] = literal
             }
         }
         return result
@@ -362,7 +368,12 @@ public final class RepositoryConfigurationStore: ConfigurationStoring, @unchecke
             source,
             values: values,
             keyForLine: headerKey,
-            render: { key, value in "#define \(key) \(try self.cStringLiteral(value))" }
+            render: { key, value in
+                if key == Managed.speakerVolume {
+                    return "#define \(key) \(value)"
+                }
+                return "#define \(key) \(try self.cStringLiteral(value))"
+            }
         )
         try secureAtomicWrite(updated, to: headerURL)
     }

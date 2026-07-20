@@ -112,7 +112,7 @@ class ServerSecurityTests(unittest.TestCase):
         firmware_headers = {
             "X-Vibe-Stick-Token": token,
             "X-Vibe-Stick-Firmware-Name": "vibestick",
-            "X-Vibe-Stick-Firmware-Version": "0.1.6",
+            "X-Vibe-Stick-Firmware-Version": "0.1.7",
             "X-Vibe-Stick-Firmware-Transport": "wifi",
             "X-Vibe-Stick-Firmware-Build-Date": "Jul 17 2026 10:20:30",
             "X-Vibe-Stick-Deployment-Nonce": "deployment-0123456789abcdef0123456789abcdef",
@@ -175,7 +175,7 @@ class ServerSecurityTests(unittest.TestCase):
         self.assertGreaterEqual(payload["device_last_seen_age_seconds"], 0)
         self.assertLess(payload["device_last_seen_age_seconds"], 1)
         self.assertEqual(payload["device_firmware_name"], "vibestick")
-        self.assertEqual(payload["device_firmware_version"], "0.1.6")
+        self.assertEqual(payload["device_firmware_version"], "0.1.7")
         self.assertEqual(payload["device_firmware_transport"], "wifi")
         self.assertEqual(payload["device_firmware_build_date"], "Jul 17 2026 10:20:30")
         self.assertEqual(
@@ -193,7 +193,7 @@ class ServerSecurityTests(unittest.TestCase):
                 "/state",
                 headers={
                     "X-Vibe-Stick-Firmware-Name": "vibestick",
-                    "X-Vibe-Stick-Firmware-Version": "0.1.6",
+                    "X-Vibe-Stick-Firmware-Version": "0.1.7",
                 },
             )
             state = connection.getresponse()
@@ -218,7 +218,7 @@ class ServerSecurityTests(unittest.TestCase):
         tracker.record(
             {
                 "name": "vibestick",
-                "version": "0.1.6",
+                "version": "0.1.7",
                 "transport": "wifi",
                 "build_date": "Jul 17 2026 10:20:30",
             }

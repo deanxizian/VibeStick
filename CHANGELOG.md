@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.7
+
+- Add a 0–100% StickS3 alert-volume control to the macOS Setup App, persist it in the generated firmware configuration, and apply it to completion, approval, and error tones.
+- Enlarge the Wi-Fi and battery readouts, refine the battery outline and charging/non-charging fill geometry, and align a full battery fill evenly inside the icon.
+- Move the Codex identity and status group slightly left for better visual balance.
+- Center the Roxy status text and tune the spacing between its status dot and label.
+- Bundle the updated Setup App, Bridge, firmware, and documentation in the universal macOS release.
+
 ## v0.1.6
 
 - Add a Roxy pet view whose animation follows Codex idle, running, approval, done, and error states; use the StickS3 right-side button to switch between Roxy and the dashboard.

@@ -89,6 +89,37 @@ struct NetworkSetupStepView: View {
         }
         .disabled(store.isBusy)
 
+        GroupBox("StickS3 声音") {
+            VStack(alignment: .leading, spacing: 6) {
+                Form {
+                    LabeledContent("扬声器音量") {
+                        HStack(spacing: 10) {
+                            Slider(
+                                value: speakerVolumeBinding,
+                                in: 0...100,
+                                step: 5
+                            )
+                            .frame(width: 220)
+                            .accessibilityValue("\(store.configuration.speakerVolume)%")
+
+                            Text("\(store.configuration.speakerVolume)%")
+                                .monospacedDigit()
+                                .frame(width: 40, alignment: .trailing)
+                        }
+                    }
+                }
+                .formStyle(.grouped)
+                .scrollDisabled(true)
+
+                Text("控制完成、等待审批和错误提醒音；重新安装并烧录后生效。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 6)
+            }
+        }
+        .disabled(store.isBusy)
+
         GroupBox("语音输入 API") {
             VStack(alignment: .leading, spacing: 10) {
                 Form {
@@ -168,6 +199,13 @@ struct NetworkSetupStepView: View {
         Binding(
             get: { store.configuration.bridgeHost },
             set: { store.setBridgeHost($0) }
+        )
+    }
+
+    private var speakerVolumeBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.configuration.speakerVolume) },
+            set: { store.configuration.speakerVolume = Int($0.rounded()) }
         )
     }
 
