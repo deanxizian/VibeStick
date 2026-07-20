@@ -29,7 +29,9 @@ It owns:
 - Wi-Fi connection.
 - Polling `GET /state`.
 - Posting button events to `/event`.
-- Blue front-button controls: single click sends Return, double click stops the current Codex turn, and long press records push-to-talk audio.
+- Blue front-button controls: long press records push-to-talk audio; for 30 seconds after a successful recording, single click sends Return and double click stops the current Codex turn. Clicks outside that window are ignored by both firmware and Bridge.
+- Right-side `KEY2` control: GPIO 12 single click switches locally between the dashboard and Roxy pet view without posting a Bridge event.
+- Roxy animation selection from the same Codex state used by the dashboard: idle/offline, running, approval, done, and error.
 - 16 kHz / 16-bit / mono PCM recording from the StickS3 microphone.
 - Uploading PCM to `/recording/audio`.
 - Agent status sounds generated as PCM and played through ES8311/I2S speaker output.
@@ -48,7 +50,7 @@ It owns:
 - Recording session state.
 - Optional ASR via a local command or an OpenAI-compatible API.
 - Transcript paste injection into the active macOS app.
-- Return-key injection for sending a draft and Codex-targeted Escape injection for stopping the current turn.
+- Return-key injection for sending a draft and Codex-targeted Escape injection for stopping the current turn, gated by the 30-second post-recording action window.
 - HUD state file updates for recording status.
 
 Bridge state is stored under:
@@ -59,7 +61,7 @@ Bridge state is stored under:
 
 ## Transport
 
-v0.1.5 uses HTTP over Wi-Fi.
+v0.1.6 uses HTTP over Wi-Fi.
 
 BLE is not part of the current mainline transport. USB is used for flashing and serial logs, not for runtime state transport.
 
@@ -70,7 +72,7 @@ HTTP traffic is not encrypted. The shared token authorizes protected requests bu
 1. The StickS3 polls `GET /state` every 2 seconds.
 2. The Bridge builds a local `VibeStickState`.
 3. The StickS3 parses Codex status, quota fields, and alert fields.
-4. The StickS3 renders the home screen.
+4. The StickS3 updates both the dashboard widgets and the Roxy animation; `KEY2` chooses which view is visible.
 5. Alert sounds are triggered only on relevant alert state changes, not on every poll.
 
 ## Recording Flow
@@ -91,9 +93,9 @@ Codex observation covers all user-started root conversations visible in local se
 
 The StickS3 home screen is dedicated to Codex status and quota.
 
-## v0.1.5 Limits
+## v0.1.6 Limits
 
-- No packaged Mac App.
+- No Apple-notarized DMG; the release provides a signed universal App in a ZIP archive.
 - No signed firmware release artifact.
 - No general device abstraction beyond StickS3.
 - No official Codex API for quota.

@@ -2,15 +2,16 @@
 
 ## Supported Device
 
-VibeStick v0.1.5 targets M5Stack StickS3.
+VibeStick v0.1.6 targets M5Stack StickS3.
 
 The project does not currently claim support for other devices because the UI layout, front button behavior, microphone path, speaker path, PMIC battery reads, and screen size are all written around StickS3.
 
 ## Hardware Used
 
 - Screen: LVGL UI on the StickS3 display.
-- Blue front button: single click sends the focused draft, double click stops the current Codex turn, and long press records push-to-talk audio until release.
-- Side power button: device power and firmware download-mode control; it is not an application input.
+- Blue front button (`KEY1`, GPIO 11): long press records push-to-talk audio until release. For 30 seconds after a successful recording, single click sends the focused draft and double click stops the current Codex turn.
+- Large right-side button (`KEY2`, GPIO 12): single click switches locally between the Codex dashboard and the Roxy pet view.
+- Corner power button: device power and firmware download-mode control; it is not an application input and is distinct from `KEY2`.
 - Microphone: StickS3 microphone captured as 16 kHz / 16-bit / mono PCM.
 - Speaker: ES8311 / I2S playback for generated agent status tones.
 - Wi-Fi: HTTP communication with the Mac bridge on a 2.4 GHz Wi-Fi network. StickS3 / ESP32-S3 does not support 5 GHz Wi-Fi.
@@ -46,6 +47,18 @@ Edit:
 Do not commit `vibe_stick_secrets.h`.
 
 The Wi-Fi network must be 2.4 GHz. If the SSID is a combined 2.4/5 GHz network and the StickS3 cannot connect, create or select a dedicated 2.4 GHz SSID.
+
+## Roxy Animation Assets
+
+The firmware uses a 96 x 104 device adaptation of the local Codex custom pet at `~/.codex/pets/roxy-pixel/spritesheet.webp`. It includes idle, running, approval, done, and error animations. Frames use a shared 31-color palette and a small PackBits-style codec, then decode into a 20 KB RGB565 buffer in PSRAM.
+
+To regenerate the checked-in C assets and deterministic QA previews:
+
+```sh
+python3 firmware/sticks3/tools/generate_roxy_assets.py --qa-dir /tmp/vibestick-roxy-qa
+```
+
+The generator validates the canonical atlas dimensions and SHA-256 before writing `firmware/sticks3/generated/vibe_roxy_assets.c` and `.h`. The original local Codex atlas is not checked into the repository or bundled by the installer.
 
 ## Flashing
 

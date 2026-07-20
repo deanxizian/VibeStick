@@ -19,7 +19,9 @@ You need:
 - A 2.4 GHz Wi-Fi name and password.
 - An optional ASR API key. [SiliconFlow](https://cloud.siliconflow.cn) is recommended; other OpenAI-compatible services are supported.
 
-A notarized DMG is not available yet, so build the app from source once:
+The recommended route is the [VibeStickSetup v0.1.6 universal macOS installer](https://github.com/deanxizian/VibeStick/releases/download/v0.1.6/VibeStickSetup-v0.1.6-macos-universal.zip). It supports both Apple Silicon and Intel. Unzip it and open the app. The installer is signed with hardened runtime but is not Apple-notarized yet; if macOS blocks the first launch, right-click the app and choose Open.
+
+You can also build it from source:
 
 ```sh
 git clone https://github.com/deanxizian/VibeStick.git
@@ -40,8 +42,9 @@ The first installation downloads about 1 GB of ESP-IDF components. Keep the Mac 
 ## Controls
 
 - Hold the front blue button to speak; release it to transcribe and paste.
-- Single-click the blue button to send the current draft.
-- Double-click the blue button to pause the current Codex task.
+- For 30 seconds after a successful recording, single-click the blue button to send the current draft.
+- For 30 seconds after a successful recording, double-click the blue button to pause the current Codex task.
+- Single-click the large right-side button to switch between the Codex dashboard and the Roxy pet view. Roxy's animation follows Codex status.
 - Reopen the installer to change Wi-Fi or ASR settings, or to reflash the device.
 
 Bridge and HUD start automatically at login. The Mac and StickS3 must be on the same LAN.
@@ -83,3 +86,5 @@ Never commit real API keys, Wi-Fi passwords, local tokens, recordings, or logs.
 ## License
 
 VibeStick is released under the [MIT License](LICENSE).
+
+Roxy is a Codex custom pet created for this project. The repository and installer contain only the generated, compressed StickS3 firmware assets, not the original local Codex atlas.

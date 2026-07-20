@@ -1,6 +1,6 @@
 # States And Sounds
 
-VibeStick v0.1.5 plays sounds only for key agent status changes on the home screen. Recording states do not play sounds.
+VibeStick v0.1.6 plays sounds only for key agent status changes on the home screen. Recording states do not play sounds.
 
 | State | Trigger | Sound |
 | --- | --- | --- |

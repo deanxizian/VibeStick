@@ -45,6 +45,8 @@ MANUAL_STATUS_SECONDS = 60
 BRIDGE_NAME = "vibestick-bridge"
 DEFAULT_MAX_RECORDING_AUDIO_BYTES = 2_000_000
 ALERT_PRESENTATION_SECONDS = 6.0
+POST_RECORDING_ACTION_WINDOW_SECONDS = 30.0
+POST_RECORDING_ACTION_STATUSES = {"pasted", "transcribed"}
 MAX_JSON_BODY_BYTES = 64 * 1024
 REQUEST_SOCKET_TIMEOUT_SECONDS = 10
 MAX_CONCURRENT_REQUESTS = 16
@@ -154,6 +156,7 @@ class BridgeStateStore:
         self._lock = threading.RLock()
         self._project_root = _resolve_project_root()
         self._manual_status_until = 0.0
+        self._post_recording_action_until = 0.0
         self._state = self._load_state()
         self._alert_tracking_initialized = False
         self._seen_alert_event_ids: set[str] = set()
@@ -184,10 +187,16 @@ class BridgeStateStore:
                 self._set_codex_status(str(requested_status), str(event.get("message") or ""))
                 self._manual_status_until = time.monotonic() + MANUAL_STATUS_SECONDS
             elif event_name == "button_short":
-                self._state.alert = AlertState(event_id="", type=AlertType.NONE, message="")
-                self._log_button_action("send", self.input_injector.press_enter())
+                if self._post_recording_action_available_locked():
+                    self._state.alert = AlertState(event_id="", type=AlertType.NONE, message="")
+                    self._log_button_action("send", self.input_injector.press_enter())
+                else:
+                    self._log_ignored_button_action("send")
             elif event_name == "button_double":
-                self._log_button_action("pause", self.input_injector.pause_current_codex_task())
+                if self._post_recording_action_available_locked():
+                    self._log_button_action("pause", self.input_injector.pause_current_codex_task())
+                else:
+                    self._log_ignored_button_action("pause")
             self._save_state_locked()
             return self._state_snapshot_locked()
 
@@ -197,6 +206,22 @@ class BridgeStateStore:
             f"button action={action} success={str(result.success).lower()} message={result.message}",
             flush=True,
         )
+
+    @staticmethod
+    def _log_ignored_button_action(action: str) -> None:
+        print(
+            f"button action={action} success=false "
+            f"message=ignored outside post-recording "
+            f"{POST_RECORDING_ACTION_WINDOW_SECONDS:g}-second window",
+            flush=True,
+        )
+
+    def _post_recording_action_available_locked(self) -> bool:
+        deadline = getattr(self, "_post_recording_action_until", 0.0)
+        if deadline <= 0.0 or time.monotonic() > deadline:
+            self._post_recording_action_until = 0.0
+            return False
+        return True
 
     def refresh_quota(self) -> VibeStickState:
         with self._lock:
@@ -212,12 +237,22 @@ class BridgeStateStore:
         self._state.provider = _provider_state_from_observation(codex_observation)
 
     def start_recording(self, request: dict[str, Any] | None = None) -> dict[str, Any]:
+        with self._lock:
+            self._post_recording_action_until = 0.0
         session = self.recording.start(request)
         return {"recording": session.to_public_jsonable(), "state": self.get_state().to_jsonable()}
 
     def stop_recording(self, request: dict[str, Any] | None = None) -> dict[str, Any]:
         session = self.recording.stop(request)
-        return {"recording": session.to_public_jsonable(), "state": self.get_state().to_jsonable()}
+        state = self.get_state().to_jsonable()
+        with self._lock:
+            if session.status in POST_RECORDING_ACTION_STATUSES:
+                self._post_recording_action_until = (
+                    time.monotonic() + POST_RECORDING_ACTION_WINDOW_SECONDS
+                )
+            else:
+                self._post_recording_action_until = 0.0
+        return {"recording": session.to_public_jsonable(), "state": state}
 
     def upload_recording_audio(
         self,

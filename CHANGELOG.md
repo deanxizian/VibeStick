@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.6
+
+- Add a Roxy pet view whose animation follows Codex idle, running, approval, done, and error states; use the StickS3 right-side button to switch between Roxy and the dashboard.
+- Limit blue-button single-click send and double-click pause actions to the 30 seconds after a successful recording, enforced independently by both firmware and Bridge.
+- Keep device state labels in Chinese and remove the Roxy title and button-hint labels for a cleaner pet screen.
+- Increase the LVGL task stack to prevent display flicker and repeated firmware resets after adding the animated view.
+- Bundle the updated Bridge, firmware, and generated Roxy assets in the universal macOS Setup App.
+
 ## v0.1.5
 
 - Add a three-step native macOS installer that prepares Python and ESP-IDF, configures Wi-Fi and ASR, flashes StickS3, installs Bridge/HUD LaunchAgents, and verifies the device end to end.

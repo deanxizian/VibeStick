@@ -6,6 +6,7 @@
 
 #include "vibe_audio.h"
 #include "vibe_board.h"
+#include "vibe_roxy_assets.h"
 #include "vibe_stick_config.h"
 #include "button_gpio.h"
 #include "cJSON.h"
@@ -44,12 +45,15 @@
 #define LCD_BACKLIGHT_DEFAULT 150
 #define LVGL_DRAW_BUF_LINES 24
 #define LVGL_TICK_PERIOD_MS 10
+#define LVGL_TASK_STACK_SIZE 8192
 #define BATTERY_FILL_MAX_WIDTH 20
 #define POWER_STATE_POLL_MS 2000
 #define ALERT_SOUND_PENDING_CAPACITY 32
 #define HTTP_JSON_RESPONSE_CAPACITY 2048
+#define POST_RECORDING_ACTION_WINDOW_MS 30000
 
 #define PIN_BUTTON_FRONT 11
+#define PIN_BUTTON_SIDE 12
 #define PIN_LCD_MOSI 39
 #define PIN_LCD_SCK 40
 #define PIN_LCD_DC 45
@@ -65,6 +69,7 @@ typedef enum {
     VIBE_STICK_EVENT_DOUBLE_CLICK,
     VIBE_STICK_EVENT_LONG_START,
     VIBE_STICK_EVENT_LONG_STOP,
+    VIBE_STICK_EVENT_TOGGLE_VIEW,
 } agent_event_type_t;
 
 typedef struct {
@@ -123,8 +128,20 @@ static size_t s_pending_alert_sound_head;
 static size_t s_pending_alert_sound_count;
 static char s_recording_session_id[40];
 static bool s_recording_audio_uploaded;
+static int64_t s_post_recording_action_deadline_ms;
+static bool s_pet_view_visible;
+static vibe_roxy_state_t s_pet_animation_state = VIBE_ROXY_IDLE;
+static size_t s_pet_frame_index;
+static uint16_t *s_pet_framebuffer;
 
 static lv_display_t *s_display;
+static lv_obj_t *s_dashboard_view;
+static lv_obj_t *s_pet_view;
+static lv_obj_t *s_pet_canvas;
+static lv_obj_t *s_pet_status_dot;
+static lv_obj_t *s_pet_status_label;
+static lv_obj_t *s_pet_active_count_label;
+static lv_timer_t *s_pet_animation_timer;
 static lv_obj_t *s_wifi_label;
 static lv_obj_t *s_wifi_status_label;
 static lv_obj_t *s_battery_label;
@@ -352,7 +369,8 @@ static esp_err_t init_display(void)
     ESP_RETURN_ON_ERROR(esp_timer_create(&tick_args, &tick_timer), TAG, "tick timer");
     ESP_RETURN_ON_ERROR(esp_timer_start_periodic(tick_timer, LVGL_TICK_PERIOD_MS * 1000), TAG, "tick start");
 
-    BaseType_t task_created = xTaskCreate(lvgl_task, "lvgl", 4096, NULL, 3, NULL);
+    BaseType_t task_created = xTaskCreate(lvgl_task, "lvgl", LVGL_TASK_STACK_SIZE,
+                                          NULL, 3, NULL);
     ESP_RETURN_ON_FALSE(task_created == pdPASS, ESP_ERR_NO_MEM, TAG, "lvgl task");
     return ESP_OK;
 }
@@ -423,6 +441,131 @@ static const char *status_text_for(const char *status)
         return "待命";
     }
     return "待命";
+}
+
+static vibe_roxy_state_t roxy_state_for_status(const char *status)
+{
+    if (strcmp(status, "RUNNING") == 0) {
+        return VIBE_ROXY_RUNNING;
+    }
+    if (strcmp(status, "APPROVAL") == 0) {
+        return VIBE_ROXY_WAITING;
+    }
+    if (strcmp(status, "DONE") == 0) {
+        return VIBE_ROXY_DONE;
+    }
+    if (strcmp(status, "ERROR") == 0) {
+        return VIBE_ROXY_ERROR;
+    }
+    return VIBE_ROXY_IDLE;
+}
+
+static bool render_roxy_frame(size_t frame_index)
+{
+    if (!s_pet_canvas || !s_pet_framebuffer) {
+        return false;
+    }
+    if (!vibe_roxy_decode_frame(s_pet_animation_state, frame_index,
+                                s_pet_framebuffer, VIBE_ROXY_FRAME_PIXELS)) {
+        ESP_LOGW(TAG, "failed to decode Roxy state=%d frame=%u",
+                 (int)s_pet_animation_state, (unsigned)frame_index);
+        return false;
+    }
+    s_pet_frame_index = frame_index;
+    lv_obj_invalidate(s_pet_canvas);
+    return true;
+}
+
+static void pet_animation_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    if (!s_pet_view_visible) {
+        return;
+    }
+    const size_t frame_count = vibe_roxy_frame_count(s_pet_animation_state);
+    if (frame_count == 0) {
+        return;
+    }
+    (void)render_roxy_frame((s_pet_frame_index + 1) % frame_count);
+}
+
+static void set_roxy_animation_state(vibe_roxy_state_t state)
+{
+    if (state == s_pet_animation_state && s_pet_framebuffer) {
+        return;
+    }
+    s_pet_animation_state = state;
+    if (s_pet_animation_timer) {
+        uint32_t period_ms = vibe_roxy_frame_duration_ms(state);
+        lv_timer_set_period(s_pet_animation_timer, period_ms > 0 ? period_ms : 300);
+        lv_timer_reset(s_pet_animation_timer);
+    }
+    (void)render_roxy_frame(0);
+}
+
+static void set_pet_view_visible(bool visible)
+{
+    lvgl_lock();
+    s_pet_view_visible = visible;
+    if (visible) {
+        lv_obj_add_flag(s_dashboard_view, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_pet_view, LV_OBJ_FLAG_HIDDEN);
+        (void)render_roxy_frame(0);
+        if (s_pet_animation_timer) {
+            lv_timer_reset(s_pet_animation_timer);
+        }
+    } else {
+        lv_obj_add_flag(s_pet_view, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_dashboard_view, LV_OBJ_FLAG_HIDDEN);
+    }
+    lvgl_unlock();
+    ESP_LOGI(TAG, "display view=%s", visible ? "roxy" : "dashboard");
+}
+
+static void create_pet_view(lv_obj_t *screen)
+{
+    s_pet_view = make_plain_obj(screen, LCD_H_RES, LCD_V_RES,
+                                lv_color_hex(0x050608), LV_OPA_TRANSP, 0);
+    lv_obj_remove_flag(s_pet_view, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(s_pet_view, LV_ALIGN_CENTER, 0, 0);
+
+    s_pet_framebuffer = heap_caps_malloc(VIBE_ROXY_FRAME_PIXELS * sizeof(uint16_t),
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_pet_framebuffer) {
+        s_pet_framebuffer = heap_caps_malloc(VIBE_ROXY_FRAME_PIXELS * sizeof(uint16_t),
+                                             MALLOC_CAP_8BIT);
+    }
+    ESP_ERROR_CHECK(s_pet_framebuffer ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(vibe_roxy_decode_frame(VIBE_ROXY_IDLE, 0, s_pet_framebuffer,
+                                           VIBE_ROXY_FRAME_PIXELS)
+                        ? ESP_OK
+                        : ESP_FAIL);
+    s_pet_canvas = lv_canvas_create(s_pet_view);
+    lv_canvas_set_buffer(s_pet_canvas, s_pet_framebuffer,
+                         VIBE_ROXY_FRAME_WIDTH, VIBE_ROXY_FRAME_HEIGHT,
+                         LV_COLOR_FORMAT_RGB565);
+    lv_obj_align(s_pet_canvas, LV_ALIGN_TOP_MID, 0, 58);
+
+    lv_obj_t *status_card = make_plain_obj(s_pet_view, LCD_H_RES - 16, 42,
+                                           lv_color_hex(0x0e1014), LV_OPA_COVER, 8);
+    lv_obj_set_style_border_width(status_card, 1, 0);
+    lv_obj_set_style_border_color(status_card, lv_color_hex(0x22252b), 0);
+    lv_obj_align(status_card, LV_ALIGN_TOP_MID, 0, 174);
+    s_pet_status_dot = make_plain_obj(status_card, 7, 7, lv_color_hex(0x9aa0aa),
+                                      LV_OPA_COVER, LV_RADIUS_CIRCLE);
+    lv_obj_align(s_pet_status_dot, LV_ALIGN_LEFT_MID, 9, 0);
+    s_pet_status_label = make_label(status_card, "待命", FONT_CN,
+                                    lv_color_hex(0xf3f4f6), 68, LV_TEXT_ALIGN_LEFT);
+    lv_obj_align(s_pet_status_label, LV_ALIGN_LEFT_MID, 24, 0);
+    s_pet_active_count_label = make_label(status_card, "", &lv_font_montserrat_12,
+                                          lv_color_hex(0x9aa0aa), 28, LV_TEXT_ALIGN_RIGHT);
+    lv_obj_align(s_pet_active_count_label, LV_ALIGN_RIGHT_MID, -9, 0);
+    lv_obj_add_flag(s_pet_active_count_label, LV_OBJ_FLAG_HIDDEN);
+
+    s_pet_animation_timer = lv_timer_create(
+        pet_animation_timer_cb, vibe_roxy_frame_duration_ms(VIBE_ROXY_IDLE), NULL);
+    ESP_ERROR_CHECK(s_pet_animation_timer ? ESP_OK : ESP_ERR_NO_MEM);
+    lv_obj_add_flag(s_pet_view, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void set_battery_ui(int battery_value, bool battery_valid,
@@ -534,9 +677,14 @@ static void create_ui(void)
     s_battery_cap = make_plain_obj(screen, 2, 7, lv_color_hex(0xf3f4f6), LV_OPA_COVER, 1);
     lv_obj_align_to(s_battery_cap, s_battery_icon, LV_ALIGN_OUT_RIGHT_MID, 1, 0);
 
-    create_codex_icon(screen);
+    s_dashboard_view = make_plain_obj(screen, LCD_H_RES, LCD_V_RES,
+                                      lv_color_hex(0x050608), LV_OPA_TRANSP, 0);
+    lv_obj_remove_flag(s_dashboard_view, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(s_dashboard_view, LV_ALIGN_CENTER, 0, 0);
 
-    s_status_dot = lv_obj_create(screen);
+    create_codex_icon(s_dashboard_view);
+
+    s_status_dot = lv_obj_create(s_dashboard_view);
     lv_obj_remove_style_all(s_status_dot);
     lv_obj_set_size(s_status_dot, 7, 7);
     lv_obj_set_style_radius(s_status_dot, LV_RADIUS_CIRCLE, 0);
@@ -548,13 +696,13 @@ static void create_ui(void)
     lv_obj_align(s_active_count_label, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(s_active_count_label, LV_OBJ_FLAG_HIDDEN);
 
-    s_codex_label = make_label(screen, "Codex", &lv_font_montserrat_16, lv_color_hex(0xf3f4f6), 60, LV_TEXT_ALIGN_LEFT);
+    s_codex_label = make_label(s_dashboard_view, "Codex", &lv_font_montserrat_16, lv_color_hex(0xf3f4f6), 60, LV_TEXT_ALIGN_LEFT);
     lv_obj_align(s_codex_label, LV_ALIGN_TOP_LEFT, 72, 51);
 
-    s_status_label = make_label(screen, "待命", FONT_CN, lv_color_hex(0xf3f4f6), 52, LV_TEXT_ALIGN_LEFT);
+    s_status_label = make_label(s_dashboard_view, "待命", FONT_CN, lv_color_hex(0xf3f4f6), 52, LV_TEXT_ALIGN_LEFT);
     lv_obj_align(s_status_label, LV_ALIGN_TOP_LEFT, 82, 73);
 
-    lv_obj_t *quota_wrap = make_plain_obj(screen, LCD_H_RES - 16, 104, lv_color_hex(0x0e1014), LV_OPA_COVER, 8);
+    lv_obj_t *quota_wrap = make_plain_obj(s_dashboard_view, LCD_H_RES - 16, 104, lv_color_hex(0x0e1014), LV_OPA_COVER, 8);
     lv_obj_set_style_border_width(quota_wrap, 1, 0);
     lv_obj_set_style_border_color(quota_wrap, lv_color_hex(0x22252b), 0);
     lv_obj_align(quota_wrap, LV_ALIGN_TOP_MID, 0, 118);
@@ -562,25 +710,27 @@ static void create_ui(void)
     lv_obj_t *divider = make_plain_obj(quota_wrap, 1, 72, lv_color_hex(0x242832), LV_OPA_COVER, 1);
     lv_obj_align(divider, LV_ALIGN_CENTER, 0, 10);
 
-    s_quota_5h_title_label = make_label(screen, "5H --%", &lv_font_montserrat_12,
+    s_quota_5h_title_label = make_label(s_dashboard_view, "5H --%", &lv_font_montserrat_12,
                                         lv_color_hex(0x8a9099), 44, LV_TEXT_ALIGN_CENTER);
     lv_obj_align(s_quota_5h_title_label, LV_ALIGN_TOP_LEFT, 17, 133);
-    s_quota_5h_label = make_label(screen, "--%", &lv_font_montserrat_20, lv_color_hex(0xf3f4f6), 54, LV_TEXT_ALIGN_CENTER);
+    s_quota_5h_label = make_label(s_dashboard_view, "--%", &lv_font_montserrat_20, lv_color_hex(0xf3f4f6), 54, LV_TEXT_ALIGN_CENTER);
     lv_obj_align(s_quota_5h_label, LV_ALIGN_TOP_LEFT, 10, 153);
-    s_quota_5h_bar = make_bar(screen, 46);
+    s_quota_5h_bar = make_bar(s_dashboard_view, 46);
     lv_obj_align(s_quota_5h_bar, LV_ALIGN_TOP_LEFT, 16, 190);
 
-    s_quota_7d_title_label = make_label(screen, "7D --%", &lv_font_montserrat_12,
+    s_quota_7d_title_label = make_label(s_dashboard_view, "7D --%", &lv_font_montserrat_12,
                                         lv_color_hex(0x8a9099), 44, LV_TEXT_ALIGN_CENTER);
     lv_obj_align(s_quota_7d_title_label, LV_ALIGN_TOP_RIGHT, -17, 133);
-    s_quota_7d_label = make_label(screen, "--%", &lv_font_montserrat_20, lv_color_hex(0xf3f4f6), 54, LV_TEXT_ALIGN_CENTER);
+    s_quota_7d_label = make_label(s_dashboard_view, "--%", &lv_font_montserrat_20, lv_color_hex(0xf3f4f6), 54, LV_TEXT_ALIGN_CENTER);
     lv_obj_align(s_quota_7d_label, LV_ALIGN_TOP_RIGHT, -10, 153);
-    s_quota_7d_bar = make_bar(screen, 46);
+    s_quota_7d_bar = make_bar(s_dashboard_view, 46);
     lv_obj_align(s_quota_7d_bar, LV_ALIGN_TOP_RIGHT, -16, 190);
-    s_quota_status_label = make_label(screen, "WAIT", &lv_font_montserrat_10,
+    s_quota_status_label = make_label(s_dashboard_view, "WAIT", &lv_font_montserrat_10,
                                       lv_color_hex(0x686e78), 84, LV_TEXT_ALIGN_CENTER);
     lv_obj_align(s_quota_status_label, LV_ALIGN_TOP_MID, 0, 207);
     lv_obj_add_flag(s_quota_status_label, LV_OBJ_FLAG_HIDDEN);
+
+    create_pet_view(screen);
 
     s_recording_overlay = lv_obj_create(screen);
     lv_obj_set_size(s_recording_overlay, LCD_H_RES, LCD_V_RES);
@@ -650,6 +800,9 @@ static void set_status_color(const char *status)
         color = lv_color_hex(0x686e78);
     }
     lv_obj_set_style_bg_color(s_status_dot, color, 0);
+    if (s_pet_status_dot) {
+        lv_obj_set_style_bg_color(s_pet_status_dot, color, 0);
+    }
 }
 
 static void render_state(void)
@@ -674,6 +827,17 @@ static void render_state(void)
     lv_label_set_text(s_codex_label, "Codex");
     lv_obj_set_style_text_color(s_codex_label, lv_color_hex(0xf3f4f6), 0);
     lv_label_set_text(s_status_label, status_text_for(display_state->status));
+    lv_label_set_text(s_pet_status_label, status_text_for(display_state->status));
+    set_roxy_animation_state(roxy_state_for_status(display_state->status));
+    if (strcmp(display_state->status, "RUNNING") == 0 &&
+        display_state->active_conversations > 0) {
+        char pet_count_text[12];
+        snprintf(pet_count_text, sizeof(pet_count_text), "%d", display_state->active_conversations);
+        lv_label_set_text(s_pet_active_count_label, pet_count_text);
+        lv_obj_clear_flag(s_pet_active_count_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_pet_active_count_label, LV_OBJ_FLAG_HIDDEN);
+    }
     if (strcmp(display_state->status, "RUNNING") == 0 &&
         display_state->active_conversations > 0) {
         const int badge_width = display_state->active_conversations >= 10 ? 22 : 18;
@@ -883,6 +1047,31 @@ static void finish_recording_overlay(void)
 {
     show_recording_overlay(NULL, NULL, false);
     play_pending_alert_sounds();
+}
+
+static void open_post_recording_action_window(void)
+{
+    s_post_recording_action_deadline_ms =
+        (esp_timer_get_time() / 1000) + POST_RECORDING_ACTION_WINDOW_MS;
+    ESP_LOGI(TAG, "single/double click enabled for %d ms after recording",
+             POST_RECORDING_ACTION_WINDOW_MS);
+}
+
+static void close_post_recording_action_window(void)
+{
+    s_post_recording_action_deadline_ms = 0;
+}
+
+static bool post_recording_action_available(void)
+{
+    if (s_post_recording_action_deadline_ms <= 0) {
+        return false;
+    }
+    if ((esp_timer_get_time() / 1000) > s_post_recording_action_deadline_ms) {
+        close_post_recording_action_window();
+        return false;
+    }
+    return true;
 }
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
@@ -1372,6 +1561,7 @@ static void handle_recording_start(void)
         return;
     }
 
+    close_post_recording_action_window();
     generate_recording_session_id(s_recording_session_id, sizeof(s_recording_session_id));
     s_recording_audio_uploaded = false;
     if (s_recording_session_id[0] == '\0') {
@@ -1440,6 +1630,7 @@ static void handle_recording_start(void)
 
 static void handle_recording_stop(void)
 {
+    bool enable_post_recording_actions = false;
     show_recording_overlay("正在发送", "", true);
     if (s_recording_session_id[0] == '\0') {
         esp_err_t stop_err = vibe_audio_stop();
@@ -1533,6 +1724,8 @@ static void handle_recording_stop(void)
         vTaskDelay(pdMS_TO_TICKS(900));
     }
     if (err == ESP_OK && stop_response_valid) {
+        enable_post_recording_actions =
+            is_recording_success_status(recording_status);
         s_recording_session_id[0] = '\0';
         s_recording_audio_uploaded = false;
     } else {
@@ -1541,6 +1734,9 @@ static void handle_recording_stop(void)
     }
     poll_state();
     finish_recording_overlay();
+    if (enable_post_recording_actions) {
+        open_post_recording_action_window();
+    }
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -1598,6 +1794,13 @@ static void button_double_click_cb(void *button_handle, void *usr_data)
     queue_event(VIBE_STICK_EVENT_DOUBLE_CLICK);
 }
 
+static void button_side_click_cb(void *button_handle, void *usr_data)
+{
+    (void)button_handle;
+    (void)usr_data;
+    queue_event(VIBE_STICK_EVENT_TOGGLE_VIEW);
+}
+
 static void button_long_start_cb(void *button_handle, void *usr_data)
 {
     (void)button_handle;
@@ -1617,29 +1820,48 @@ static void button_up_cb(void *button_handle, void *usr_data)
     }
 }
 
-static esp_err_t init_button(void)
+static esp_err_t init_buttons(void)
 {
-    button_handle_t button = NULL;
+    button_handle_t front_button = NULL;
     const button_config_t button_config = {0};
-    const button_gpio_config_t gpio_config = {
+    const button_gpio_config_t front_gpio_config = {
         .gpio_num = PIN_BUTTON_FRONT,
         .active_level = 0,
         .enable_power_save = true,
     };
-    ESP_RETURN_ON_ERROR(iot_button_new_gpio_device(&button_config, &gpio_config, &button), TAG, "button");
-    ESP_RETURN_ON_ERROR(iot_button_register_cb(button, BUTTON_SINGLE_CLICK, NULL, button_single_click_cb, NULL),
-                        TAG, "button single");
-    ESP_RETURN_ON_ERROR(iot_button_register_cb(button, BUTTON_DOUBLE_CLICK, NULL, button_double_click_cb, NULL),
-                        TAG, "button double");
+    ESP_RETURN_ON_ERROR(iot_button_new_gpio_device(&button_config, &front_gpio_config,
+                                                    &front_button),
+                        TAG, "front button");
+    ESP_RETURN_ON_ERROR(iot_button_register_cb(front_button, BUTTON_SINGLE_CLICK, NULL,
+                                                button_single_click_cb, NULL),
+                        TAG, "front button single");
+    ESP_RETURN_ON_ERROR(iot_button_register_cb(front_button, BUTTON_DOUBLE_CLICK, NULL,
+                                                button_double_click_cb, NULL),
+                        TAG, "front button double");
     button_event_args_t long_press_args = {
         .long_press = {
             .press_time = 450,
         },
     };
-    ESP_RETURN_ON_ERROR(iot_button_register_cb(button, BUTTON_LONG_PRESS_START, &long_press_args, button_long_start_cb, NULL),
-                        TAG, "button long");
-    ESP_RETURN_ON_ERROR(iot_button_register_cb(button, BUTTON_PRESS_UP, NULL, button_up_cb, NULL),
-                        TAG, "button up");
+    ESP_RETURN_ON_ERROR(iot_button_register_cb(front_button, BUTTON_LONG_PRESS_START,
+                                                &long_press_args, button_long_start_cb, NULL),
+                        TAG, "front button long");
+    ESP_RETURN_ON_ERROR(iot_button_register_cb(front_button, BUTTON_PRESS_UP, NULL,
+                                                button_up_cb, NULL),
+                        TAG, "front button up");
+
+    button_handle_t side_button = NULL;
+    const button_gpio_config_t side_gpio_config = {
+        .gpio_num = PIN_BUTTON_SIDE,
+        .active_level = 0,
+        .enable_power_save = true,
+    };
+    ESP_RETURN_ON_ERROR(iot_button_new_gpio_device(&button_config, &side_gpio_config,
+                                                    &side_button),
+                        TAG, "side button");
+    ESP_RETURN_ON_ERROR(iot_button_register_cb(side_button, BUTTON_SINGLE_CLICK, NULL,
+                                                button_side_click_cb, NULL),
+                        TAG, "side button single");
     return ESP_OK;
 }
 
@@ -1696,11 +1918,19 @@ static void app_task(void *arg)
             poll_state();
             break;
         case VIBE_STICK_EVENT_SHORT_PRESS:
-            post_simple_event("button_short", NULL);
+            if (post_recording_action_available()) {
+                post_simple_event("button_short", NULL);
+            } else {
+                ESP_LOGI(TAG, "ignored single click outside post-recording window");
+            }
             break;
         case VIBE_STICK_EVENT_DOUBLE_CLICK:
-            post_simple_event("button_double", NULL);
-            poll_state();
+            if (post_recording_action_available()) {
+                post_simple_event("button_double", NULL);
+                poll_state();
+            } else {
+                ESP_LOGI(TAG, "ignored double click outside post-recording window");
+            }
             break;
         case VIBE_STICK_EVENT_LONG_START:
             (void)process_pending_long_start();
@@ -1709,6 +1939,9 @@ static void app_task(void *arg)
             if (atomic_exchange(&s_long_stop_pending, false)) {
                 handle_recording_stop();
             }
+            break;
+        case VIBE_STICK_EVENT_TOGGLE_VIEW:
+            set_pet_view_visible(!s_pet_view_visible);
             break;
         }
     }
@@ -1737,7 +1970,7 @@ void app_main(void)
     lvgl_unlock();
     (void)refresh_power_state();
     render_state();
-    ESP_ERROR_CHECK(init_button());
+    ESP_ERROR_CHECK(init_buttons());
     ESP_ERROR_CHECK(vibe_audio_init());
     ESP_ERROR_CHECK(init_wifi());
     BaseType_t app_task_created = xTaskCreate(app_task, "agent_app", 10240, NULL, 4, NULL);

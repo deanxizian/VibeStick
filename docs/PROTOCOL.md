@@ -1,6 +1,6 @@
 # Protocol
 
-VibeStick v0.1.5 uses HTTP over Wi-Fi between the StickS3 firmware and the local Mac bridge.
+VibeStick v0.1.6 uses HTTP over Wi-Fi between the StickS3 firmware and the local Mac bridge.
 
 Default bridge URL:
 
@@ -14,7 +14,7 @@ Firmware requests include:
 
 ```text
 X-Vibe-Stick-Firmware-Name: vibestick
-X-Vibe-Stick-Firmware-Version: 0.1.5
+X-Vibe-Stick-Firmware-Version: 0.1.6
 X-Vibe-Stick-Firmware-Transport: HTTP
 X-Vibe-Stick-Firmware-Build-Date: <compile date>
 ```
@@ -75,7 +75,7 @@ Returns the current bridge state:
     "message": ""
   },
   "bridge_name": "vibestick-bridge",
-  "bridge_version": "0.1.5"
+  "bridge_version": "0.1.6"
 }
 ```
 
@@ -91,7 +91,7 @@ Returns bridge health metadata:
 {
   "ok": true,
   "bridge_name": "vibestick-bridge",
-  "bridge_version": "0.1.5"
+  "bridge_version": "0.1.6"
 }
 ```
 
@@ -105,7 +105,7 @@ Examples:
 {"event":"button_short","source":"sticks3"}
 ```
 
-`button_short` injects Return into the focused macOS app. `button_double` activates the Codex desktop app and sends its stop-turn Escape sequence. Stopping interrupts only the current turn; the task history remains available for a follow-up.
+After a recording finishes successfully, the Bridge accepts button actions for 30 seconds. During that window, `button_short` injects Return into the focused macOS app, while `button_double` activates the Codex desktop app and sends its stop-turn Escape sequence. Both events are acknowledged but ignored outside the window. Stopping interrupts only the current turn; the task history remains available for a follow-up.
 
 ```json
 {"event":"button_double","source":"sticks3"}
